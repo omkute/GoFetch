@@ -62,6 +62,7 @@
 * **Configurable Classification**: Provides a flag (`--no-organize`) and config setting to enable, disable, or customize category mappings.
 
 ### CLI & Usability
+* **Input Mechanism**: Explicit manual URL entry via CLI arguments (`gofetch <url>`) or batch file feeds (`--input-file <path>`); no automatic browser interception in v1.
 * **Progress Visualization**: Interactive terminal UI/progress bar showing overall speed, ETA, percentage, and per-chunk status.
 * **Non-Interactive Mode**: Headless/quiet output mode (`--quiet` or `--json`) suitable for scripting and background pipelines.
 * **Configuration File**: Persistent configuration file (`config.yaml` / `config.json`) for default concurrency, chunk sizes, and folder mappings.
@@ -71,10 +72,18 @@
 
 ## 4. Non-Goals (Strictly OUT of Scope for v1)
 
-* **GUI / Native Window Application**: No graphical user interface (Electron, Wails, or Fyne); v1 is strictly a terminal-native CLI/TUI application.
-* **Browser Integration / Extensions**: No native messaging extensions for Chrome, Firefox, or Safari to intercept browser downloads.
+* **GUI / Native Window Application**: Out of scope for v1 (strictly terminal-native CLI/TUI); planned for upcoming iterations.
+* **Browser Extension / Automatic Link Interception**: Out of scope for v1 (downloads require manual link input in terminal); browser companion extension is deferred to future iterations.
 * **Torrent & P2P Protocols**: No BitTorrent, DHT, or magnet link handling; HTTP(S) only.
 * **Site-Specific Stream Extractors**: No media scrapers or decrypters (e.g., YouTube-DL, HLS `.m3u8`, DASH stream reassembly).
 * **Remote Daemon / RPC API**: No background headless daemon service, REST API, or web dashboard (e.g., aria2-style JSON-RPC).
 * **Cloud Storage Sync**: No direct upload/sync to cloud providers (e.g., S3, Google Drive, Dropbox).
 * **Bandwidth Throttling / Speed Limiter**: No dynamic per-task or global upload/download rate limiting schedules in v1.
+
+---
+
+## 5. Future Roadmap Preview (Post-v1)
+
+* **v2 — Native Desktop GUI**: Cross-platform desktop interface (e.g., Wails/Fyne) providing a visual queue manager, category drawer, and speed graphs.
+* **v3 — Browser Companion Extension**: Browser extension (Chrome, Firefox, Edge) utilizing the Native Messaging API to automatically capture downloads without manual terminal copying.
+* **v4 — Remote Daemon & Webhook Ecosystem**: Headless daemon with local RPC/REST endpoints for remote web UI management and webhook notifications upon download completion.
