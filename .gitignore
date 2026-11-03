@@ -3,5 +3,8 @@ bin/
 *.gofetch.part
 *.exe
 *.test
+*.tar.xz
+*.iso
+*.zip
 .DS_Store
 downloads_demo/
