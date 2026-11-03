@@ -218,7 +218,7 @@ func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *
 	}
 
 	req.Header.Set("Range", chunk.RangeHeader())
-	req.Header.Set("User-Agent", "GoFetch/1.0")
+	req.Header.Set("User-Agent", DefaultUserAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {

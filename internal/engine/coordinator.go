@@ -77,7 +77,7 @@ func (c *Coordinator) DownloadSingleStreamWithOptions(ctx context.Context, probe
 	if err != nil {
 		return "", fmt.Errorf("failed to build download request: %w", err)
 	}
-	req.Header.Set("User-Agent", "GoFetch/1.0")
+	req.Header.Set("User-Agent", DefaultUserAgent)
 
 	resp, err := c.client.Do(req)
 	if err != nil {

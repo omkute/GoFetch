@@ -16,6 +16,9 @@ import (
 // DefaultFilename is used when no valid filename can be parsed or sanitized.
 const DefaultFilename = "download"
 
+// DefaultUserAgent is the standard HTTP user agent string sent for probes and chunk requests.
+const DefaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 GoFetch/1.0"
+
 // ResourceInfo represents metadata about a remote resource discovered during probe.
 type ResourceInfo struct {
 	URL           string
@@ -100,7 +103,7 @@ func Probe(ctx context.Context, client *http.Client, targetURL string) (*Resourc
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HEAD request: %w", err)
 	}
-	headReq.Header.Set("User-Agent", "GoFetch/1.0")
+	headReq.Header.Set("User-Agent", DefaultUserAgent)
 
 	resp, err := client.Do(headReq)
 	if err == nil {
@@ -119,7 +122,7 @@ func Probe(ctx context.Context, client *http.Client, targetURL string) (*Resourc
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fallback GET request: %w", err)
 	}
-	getReq.Header.Set("User-Agent", "GoFetch/1.0")
+	getReq.Header.Set("User-Agent", DefaultUserAgent)
 	// Request a single byte to avoid streaming entire body during probe if Range is supported
 	getReq.Header.Set("Range", "bytes=0-0")
 
