@@ -28,7 +28,7 @@ func newDaemonCmd() *cobra.Command {
 
 			errCh := make(chan error, 1)
 			go func() {
-				log.Printf("Starting GoFetch daemon on %s", daemonAddr)
+				log.Printf("Starting GoFetch loopback daemon on %s (PID: %d)", daemonAddr, os.Getpid())
 				if err := server.Start(); err != nil {
 					errCh <- err
 				}
