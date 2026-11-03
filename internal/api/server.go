@@ -20,6 +20,9 @@ type Server struct {
 	httpServer *http.Server
 	ready      chan struct{}
 	mu         sync.RWMutex
+
+	jobs   map[string]*jobRecord
+	jobsMu sync.RWMutex
 }
 
 // NewServer creates a new Server instance configured for the provided address.
@@ -31,7 +34,13 @@ func NewServer(addr string) *Server {
 	return &Server{
 		addr:  addr,
 		ready: make(chan struct{}),
+		jobs:  make(map[string]*jobRecord),
 	}
+}
+
+// Router returns the configured HTTP handler with all registered API routes.
+func (s *Server) Router() http.Handler {
+	return s.setupRoutes()
 }
 
 // Addr returns the configured address or active listening address if started.

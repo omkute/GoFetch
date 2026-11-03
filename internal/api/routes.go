@@ -18,6 +18,15 @@ func (s *Server) setupRoutes() http.Handler {
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", s.handleHealth)
+
+		r.Route("/downloads", func(r chi.Router) {
+			r.Post("/", s.handleCreateDownload)
+			r.Get("/", s.handleListDownloads)
+			r.Get("/{id}", s.handleGetDownload)
+			r.Post("/{id}/pause", s.handlePauseDownload)
+			r.Post("/{id}/resume", s.handleResumeDownload)
+			r.Delete("/{id}", s.handleDeleteDownload)
+		})
 	})
 
 	return r
