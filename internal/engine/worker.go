@@ -21,26 +21,40 @@ const DefaultConcurrency = 4
 // If the target server lacks byte Range support, it automatically downgrades to
 // single-stream download without breaking invariant safety.
 func (c *Coordinator) DownloadParallel(ctx context.Context, probe *ResourceInfo, destDir string, numWorkers int) (string, error) {
-	return c.DownloadResumable(ctx, "", probe, destDir, numWorkers)
+	return c.DownloadWithOptions(ctx, probe, DownloadOptions{
+		DestDir:    destDir,
+		MaxWorkers: numWorkers,
+	})
 }
 
 // DownloadResumable executes or resumes a multi-chunk partitioned download using
 // persisted checkpoints and transient error retries.
 func (c *Coordinator) DownloadResumable(ctx context.Context, jobID string, probe *ResourceInfo, destDir string, numWorkers int) (string, error) {
+	return c.DownloadWithOptions(ctx, probe, DownloadOptions{
+		DestDir:    destDir,
+		JobID:      jobID,
+		MaxWorkers: numWorkers,
+	})
+}
+
+// DownloadWithOptions executes a download according to the provided DownloadOptions,
+// honoring sequential streaming mode, concurrency limiters, and resumable checkpoints.
+func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceInfo, opts DownloadOptions) (string, error) {
 	if probe == nil {
 		return "", errors.New("probe info cannot be nil")
 	}
 
 	// Architectural Invariant: Safely downgrade if Range headers are not supported or size is unknown
 	if !probe.AcceptRanges || probe.ContentLength <= 0 {
-		return c.DownloadSingleStream(ctx, probe, destDir)
+		return c.DownloadSingleStream(ctx, probe, opts.DestDir)
 	}
 
+	numWorkers := opts.MaxWorkers
 	if numWorkers <= 0 {
 		numWorkers = DefaultConcurrency
 	}
 
-	absDir, err := CleanDestinationPath(destDir)
+	absDir, err := CleanDestinationPath(opts.DestDir)
 	if err != nil {
 		return "", err
 	}
@@ -51,8 +65,8 @@ func (c *Coordinator) DownloadResumable(ctx context.Context, jobID string, probe
 	var chunks []Chunk
 
 	// 1. Check if an existing checkpoint can be resumed
-	if c.store != nil && jobID != "" {
-		if cp, getErr := c.store.GetCheckpoint(jobID); getErr == nil && cp != nil {
+	if c.store != nil && opts.JobID != "" {
+		if cp, getErr := c.store.GetCheckpoint(opts.JobID); getErr == nil && cp != nil {
 			if info, statErr := os.Stat(partPath); statErr == nil && info.Size() == probe.ContentLength {
 				chunks = cp.Chunks
 			}
@@ -67,9 +81,9 @@ func (c *Coordinator) DownloadResumable(ctx context.Context, jobID string, probe
 			return "", fmt.Errorf("failed to partition download: %w", partErr)
 		}
 
-		if c.store != nil && jobID != "" {
+		if c.store != nil && opts.JobID != "" {
 			_ = c.store.SaveCheckpoint(&Checkpoint{
-				ID:        jobID,
+				ID:        opts.JobID,
 				URL:       probe.FinalURL,
 				FinalPath: finalPath,
 				TotalSize: probe.ContentLength,
@@ -99,47 +113,94 @@ func (c *Coordinator) DownloadResumable(ctx context.Context, jobID string, probe
 	}
 
 	retryCfg := DefaultRetryConfig()
-	g, gCtx := errgroup.WithContext(ctx)
 
-	for i := range chunks {
-		chunk := &chunks[i]
-		if chunk.Completed || chunk.Remaining() <= 0 {
-			continue // Skip already completed chunks
+	// 4. Execute either in sequential or parallel mode
+	if opts.Sequential {
+		// Sequential head-to-tail download (0 -> 1 -> ... -> N-1)
+		for i := range chunks {
+			chunk := &chunks[i]
+			if chunk.Completed || chunk.Remaining() <= 0 {
+				continue
+			}
+
+			if opts.Semaphore != nil {
+				if semErr := opts.Semaphore.Acquire(ctx); semErr != nil {
+					return "", semErr
+				}
+			}
+
+			dlErr := ExecuteWithRetry(ctx, retryCfg, func() error {
+				return downloadChunk(ctx, c.client, downloadURL, chunk, writer)
+			})
+
+			if opts.Semaphore != nil {
+				opts.Semaphore.Release()
+			}
+
+			if dlErr != nil {
+				if c.store != nil && opts.JobID != "" {
+					_ = c.store.SaveCheckpoint(&Checkpoint{
+						ID:        opts.JobID,
+						URL:       probe.FinalURL,
+						FinalPath: finalPath,
+						TotalSize: probe.ContentLength,
+						ETag:      probe.ETag,
+						Chunks:    chunks,
+						UpdatedAt: time.Now(),
+					})
+				}
+				return "", fmt.Errorf("sequential download error on chunk %d: %w", chunk.Index, dlErr)
+			}
+		}
+	} else {
+		// Parallel concurrent download
+		g, gCtx := errgroup.WithContext(ctx)
+		for i := range chunks {
+			chunk := &chunks[i]
+			if chunk.Completed || chunk.Remaining() <= 0 {
+				continue // Skip already completed chunks
+			}
+
+			g.Go(func() error {
+				if opts.Semaphore != nil {
+					if semErr := opts.Semaphore.Acquire(gCtx); semErr != nil {
+						return semErr
+					}
+					defer opts.Semaphore.Release()
+				}
+
+				return ExecuteWithRetry(gCtx, retryCfg, func() error {
+					return downloadChunk(gCtx, c.client, downloadURL, chunk, writer)
+				})
+			})
 		}
 
-		g.Go(func() error {
-			return ExecuteWithRetry(gCtx, retryCfg, func() error {
-				return downloadChunk(gCtx, c.client, downloadURL, chunk, writer)
-			})
-		})
-	}
-
-	if err := g.Wait(); err != nil {
-		// Update checkpoint on error or pause before returning
-		if c.store != nil && jobID != "" {
-			_ = c.store.SaveCheckpoint(&Checkpoint{
-				ID:        jobID,
-				URL:       probe.FinalURL,
-				FinalPath: finalPath,
-				TotalSize: probe.ContentLength,
-				ETag:      probe.ETag,
-				Chunks:    chunks,
-				UpdatedAt: time.Now(),
-			})
+		if err := g.Wait(); err != nil {
+			if c.store != nil && opts.JobID != "" {
+				_ = c.store.SaveCheckpoint(&Checkpoint{
+					ID:        opts.JobID,
+					URL:       probe.FinalURL,
+					FinalPath: finalPath,
+					TotalSize: probe.ContentLength,
+					ETag:      probe.ETag,
+					Chunks:    chunks,
+					UpdatedAt: time.Now(),
+				})
+			}
+			return "", fmt.Errorf("parallel download error: %w", err)
 		}
-		return "", fmt.Errorf("parallel download error: %w", err)
 	}
 
-	// 4. Flush dirty page buffers and commit staging .part file
+	// 5. Flush dirty page buffers and commit staging .part file
 	if err := writer.Commit(); err != nil {
-		return "", fmt.Errorf("failed to commit parallel download: %w", err)
+		return "", fmt.Errorf("failed to commit download: %w", err)
 	}
 
 	committed = true
 
-	// 5. Clean up completed checkpoint
-	if c.store != nil && jobID != "" {
-		_ = c.store.DeleteCheckpoint(jobID)
+	// 6. Clean up completed checkpoint
+	if c.store != nil && opts.JobID != "" {
+		_ = c.store.DeleteCheckpoint(opts.JobID)
 	}
 
 	return finalPath, nil
