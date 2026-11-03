@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -27,6 +30,9 @@ type jobRecord struct {
 	Category        string
 	CreatedAt       time.Time
 	Chunks          []ChunkDetail
+	maxChunks       int
+	destDir         string
+	cancel          context.CancelFunc
 }
 
 func generateID() string {
@@ -52,6 +58,16 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 		priority = "normal"
 	}
 
+	destDir := req.DestinationDir
+	if destDir == "" {
+		destDir = "."
+	}
+
+	maxChunks := req.MaxChunks
+	if maxChunks <= 0 {
+		maxChunks = 4
+	}
+
 	// Extract filename from URL
 	cleanURL := strings.TrimRight(req.URL, "/")
 	rawName := path.Base(cleanURL)
@@ -59,29 +75,121 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 
 	id := generateID()
 	record := &jobRecord{
-		ID:        id,
-		URL:       req.URL,
-		FileName:  fileName,
-		Status:    "queued",
-		Priority:  priority,
-		CreatedAt: time.Now().UTC(),
-		Chunks:    make([]ChunkDetail, 0),
+		ID:         id,
+		URL:        req.URL,
+		FileName:   fileName,
+		TargetPath: filepath.Join(destDir, fileName),
+		Status:     "queued",
+		Priority:   priority,
+		CreatedAt:  time.Now().UTC(),
+		Chunks:     make([]ChunkDetail, 0),
+		maxChunks:  maxChunks,
+		destDir:    destDir,
 	}
 
 	s.jobsMu.Lock()
 	s.jobs[id] = record
 	s.jobsMu.Unlock()
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(DownloadResponse{
+	resp := DownloadResponse{
 		ID:        record.ID,
 		URL:       record.URL,
 		FileName:  record.FileName,
 		Status:    record.Status,
 		Priority:  record.Priority,
 		CreatedAt: record.CreatedAt,
-	})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(resp)
+
+	go s.runDownload(record)
+}
+
+func (s *Server) runDownload(record *jobRecord) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	s.jobsMu.Lock()
+	if record.Status == "paused" {
+		s.jobsMu.Unlock()
+		cancel()
+		return
+	}
+	record.cancel = cancel
+	record.Status = "downloading"
+	s.jobsMu.Unlock()
+
+	client := s.getClient()
+	probe, err := engine.Probe(ctx, client, record.URL)
+	if err != nil {
+		s.jobsMu.Lock()
+		if !errors.Is(err, context.Canceled) {
+			record.Status = "failed"
+		}
+		s.jobsMu.Unlock()
+		return
+	}
+
+	targetDir := record.destDir
+	if targetDir == "" {
+		targetDir = "."
+	}
+
+	s.jobsMu.Lock()
+	if probe.Filename != "" {
+		record.FileName = probe.Filename
+		record.TargetPath = filepath.Join(targetDir, probe.Filename)
+	}
+	record.TotalBytes = probe.ContentLength
+	s.jobsMu.Unlock()
+
+	coord := engine.NewCoordinator(client)
+
+	lastBytes := int64(0)
+	lastTime := time.Now()
+
+	opts := engine.DownloadOptions{
+		DestDir:    targetDir,
+		MaxWorkers: record.maxChunks,
+		ProgressFn: func(chunkIndex int, bytesRead int) {
+			s.jobsMu.Lock()
+			record.DownloadedBytes += int64(bytesRead)
+			now := time.Now()
+			dur := now.Sub(lastTime).Seconds()
+			if dur >= 0.25 {
+				delta := record.DownloadedBytes - lastBytes
+				if dur > 0 {
+					record.SpeedBps = int64(float64(delta) / dur)
+				}
+				lastBytes = record.DownloadedBytes
+				lastTime = now
+				if record.SpeedBps > 0 && record.TotalBytes > record.DownloadedBytes {
+					record.ETASeconds = (record.TotalBytes - record.DownloadedBytes) / record.SpeedBps
+				}
+			}
+			s.jobsMu.Unlock()
+		},
+	}
+
+	finalPath, err := coord.DownloadWithOptions(ctx, probe, opts)
+
+	s.jobsMu.Lock()
+	defer s.jobsMu.Unlock()
+
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		record.Status = "failed"
+		return
+	}
+
+	record.Status = "completed"
+	record.DownloadedBytes = record.TotalBytes
+	record.TargetPath = finalPath
+	record.SpeedBps = 0
+	record.ETASeconds = 0
 }
 
 func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
@@ -129,16 +237,13 @@ func (s *Server) handleGetDownload(w http.ResponseWriter, r *http.Request) {
 
 	s.jobsMu.RLock()
 	job, exists := s.jobs[id]
-	s.jobsMu.RUnlock()
-
 	if !exists {
+		s.jobsMu.RUnlock()
 		http.Error(w, `{"error":"download not found"}`, http.StatusNotFound)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(DownloadDetailResponse{
+	resp := DownloadDetailResponse{
 		ID:              job.ID,
 		URL:             job.URL,
 		FileName:        job.FileName,
@@ -151,7 +256,12 @@ func (s *Server) handleGetDownload(w http.ResponseWriter, r *http.Request) {
 		ETASeconds:      job.ETASeconds,
 		Category:        job.Category,
 		Chunks:          job.Chunks,
-	})
+	}
+	s.jobsMu.RUnlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handlePauseDownload(w http.ResponseWriter, r *http.Request) {
@@ -161,6 +271,10 @@ func (s *Server) handlePauseDownload(w http.ResponseWriter, r *http.Request) {
 	job, exists := s.jobs[id]
 	if exists {
 		job.Status = "paused"
+		if job.cancel != nil {
+			job.cancel()
+			job.cancel = nil
+		}
 	}
 	s.jobsMu.Unlock()
 
@@ -184,6 +298,7 @@ func (s *Server) handleResumeDownload(w http.ResponseWriter, r *http.Request) {
 	job, exists := s.jobs[id]
 	if exists {
 		job.Status = "resumed"
+		go s.runDownload(job)
 	}
 	s.jobsMu.Unlock()
 
@@ -204,8 +319,12 @@ func (s *Server) handleDeleteDownload(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
 	s.jobsMu.Lock()
-	_, exists := s.jobs[id]
+	job, exists := s.jobs[id]
 	if exists {
+		if job.cancel != nil {
+			job.cancel()
+			job.cancel = nil
+		}
 		delete(s.jobs, id)
 	}
 	s.jobsMu.Unlock()
@@ -222,3 +341,4 @@ func (s *Server) handleDeleteDownload(w http.ResponseWriter, r *http.Request) {
 		Status: "deleted",
 	})
 }
+

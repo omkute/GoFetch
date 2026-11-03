@@ -89,8 +89,8 @@ func TestIntegration_DaemonRESTAPILifecycle(t *testing.T) {
 	if err := json.Unmarshal(getW.Body.Bytes(), &detailResp); err != nil {
 		t.Fatalf("failed decoding detail response: %v", err)
 	}
-	if detailResp.Status != "resumed" {
-		t.Errorf("expected resumed status, got %s", detailResp.Status)
+	if detailResp.Status != "resumed" && detailResp.Status != "downloading" {
+		t.Errorf("expected resumed or downloading status, got %s", detailResp.Status)
 	}
 
 	// 6. Delete via DELETE /api/v1/downloads/{id}

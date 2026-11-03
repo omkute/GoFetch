@@ -39,11 +39,16 @@ func NewCoordinatorWithStore(client *http.Client, store CheckpointStore) *Coordi
 // DownloadSingleStream executes a sequential streaming download of a resource,
 // writing into a staged `.gofetch.part` file and atomically committing on completion.
 func (c *Coordinator) DownloadSingleStream(ctx context.Context, probe *ResourceInfo, destDir string) (string, error) {
+	return c.DownloadSingleStreamWithOptions(ctx, probe, DownloadOptions{DestDir: destDir})
+}
+
+// DownloadSingleStreamWithOptions executes a single-stream download honoring DownloadOptions and ProgressFn.
+func (c *Coordinator) DownloadSingleStreamWithOptions(ctx context.Context, probe *ResourceInfo, opts DownloadOptions) (string, error) {
 	if probe == nil {
 		return "", errors.New("probe info cannot be nil")
 	}
 
-	absDir, err := CleanDestinationPath(destDir)
+	absDir, err := CleanDestinationPath(opts.DestDir)
 	if err != nil {
 		return "", err
 	}
@@ -103,6 +108,9 @@ func (c *Coordinator) DownloadSingleStream(ctx context.Context, probe *ResourceI
 				return "", fmt.Errorf("failed to write data at offset %d: %w", offset, writeErr)
 			}
 			offset += int64(n)
+			if opts.ProgressFn != nil {
+				opts.ProgressFn(0, n)
+			}
 		}
 
 		if readErr != nil {

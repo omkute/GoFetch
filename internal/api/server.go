@@ -21,8 +21,9 @@ type Server struct {
 	ready      chan struct{}
 	mu         sync.RWMutex
 
-	jobs   map[string]*jobRecord
-	jobsMu sync.RWMutex
+	httpClient *http.Client
+	jobs       map[string]*jobRecord
+	jobsMu     sync.RWMutex
 }
 
 // NewServer creates a new Server instance configured for the provided address.
@@ -32,10 +33,27 @@ func NewServer(addr string) *Server {
 		addr = DefaultAddr
 	}
 	return &Server{
-		addr:  addr,
-		ready: make(chan struct{}),
-		jobs:  make(map[string]*jobRecord),
+		addr:       addr,
+		ready:      make(chan struct{}),
+		jobs:       make(map[string]*jobRecord),
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+// SetClient sets a custom http.Client for outbound probing and chunk downloads.
+func (s *Server) SetClient(client *http.Client) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.httpClient = client
+}
+
+func (s *Server) getClient() *http.Client {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.httpClient != nil {
+		return s.httpClient
+	}
+	return http.DefaultClient
 }
 
 // Router returns the configured HTTP handler with all registered API routes.
@@ -84,6 +102,14 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully stops the HTTP server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.jobsMu.Lock()
+	for _, job := range s.jobs {
+		if job.cancel != nil {
+			job.cancel()
+		}
+	}
+	s.jobsMu.Unlock()
+
 	s.mu.Lock()
 	server := s.httpServer
 	s.mu.Unlock()

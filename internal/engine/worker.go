@@ -46,7 +46,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 
 	// Architectural Invariant: Safely downgrade if Range headers are not supported or size is unknown
 	if !probe.AcceptRanges || probe.ContentLength <= 0 {
-		return c.DownloadSingleStream(ctx, probe, opts.DestDir)
+		return c.DownloadSingleStreamWithOptions(ctx, probe, opts)
 	}
 
 	numWorkers := opts.MaxWorkers
@@ -130,7 +130,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 			}
 
 			dlErr := ExecuteWithRetry(ctx, retryCfg, func() error {
-				return downloadChunk(ctx, c.client, downloadURL, chunk, writer)
+				return downloadChunk(ctx, c.client, downloadURL, chunk, writer, opts.ProgressFn)
 			})
 
 			if opts.Semaphore != nil {
@@ -170,7 +170,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 				}
 
 				return ExecuteWithRetry(gCtx, retryCfg, func() error {
-					return downloadChunk(gCtx, c.client, downloadURL, chunk, writer)
+					return downloadChunk(gCtx, c.client, downloadURL, chunk, writer, opts.ProgressFn)
 				})
 			})
 		}
@@ -207,7 +207,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 }
 
 // downloadChunk streams an individual byte range [Current, End] directly into disk via WriteAt.
-func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *Chunk, writer *storage.FileWriter) error {
+func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *Chunk, writer *storage.FileWriter, progressFn func(chunkIndex int, bytesRead int)) error {
 	if chunk.Completed || chunk.Remaining() <= 0 {
 		return nil
 	}
@@ -257,6 +257,9 @@ func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *
 				return fmt.Errorf("chunk %d: write error at offset %d: %w", chunk.Index, chunk.Current, writeErr)
 			}
 			chunk.Current += int64(n)
+			if progressFn != nil {
+				progressFn(chunk.Index, n)
+			}
 		}
 
 		if readErr != nil {
