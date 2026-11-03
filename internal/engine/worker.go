@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/omkute/gofetch/internal/storage"
 	"golang.org/x/sync/errgroup"
@@ -19,6 +21,12 @@ const DefaultConcurrency = 4
 // If the target server lacks byte Range support, it automatically downgrades to
 // single-stream download without breaking invariant safety.
 func (c *Coordinator) DownloadParallel(ctx context.Context, probe *ResourceInfo, destDir string, numWorkers int) (string, error) {
+	return c.DownloadResumable(ctx, "", probe, destDir, numWorkers)
+}
+
+// DownloadResumable executes or resumes a multi-chunk partitioned download using
+// persisted checkpoints and transient error retries.
+func (c *Coordinator) DownloadResumable(ctx context.Context, jobID string, probe *ResourceInfo, destDir string, numWorkers int) (string, error) {
 	if probe == nil {
 		return "", errors.New("probe info cannot be nil")
 	}
@@ -32,19 +40,47 @@ func (c *Coordinator) DownloadParallel(ctx context.Context, probe *ResourceInfo,
 		numWorkers = DefaultConcurrency
 	}
 
-	chunks, err := PartitionFile(probe.ContentLength, numWorkers)
-	if err != nil {
-		return "", fmt.Errorf("failed to partition download: %w", err)
-	}
-
 	absDir, err := CleanDestinationPath(destDir)
 	if err != nil {
 		return "", err
 	}
 
 	finalPath := filepath.Join(absDir, probe.Filename)
+	partPath := finalPath + storage.PartFileExtension
 
-	// Preallocate target disk space upfront
+	var chunks []Chunk
+
+	// 1. Check if an existing checkpoint can be resumed
+	if c.store != nil && jobID != "" {
+		if cp, getErr := c.store.GetCheckpoint(jobID); getErr == nil && cp != nil {
+			if info, statErr := os.Stat(partPath); statErr == nil && info.Size() == probe.ContentLength {
+				chunks = cp.Chunks
+			}
+		}
+	}
+
+	// 2. If no valid checkpoint exists, partition from scratch and save initial state
+	if len(chunks) == 0 {
+		var partErr error
+		chunks, partErr = PartitionFile(probe.ContentLength, numWorkers)
+		if partErr != nil {
+			return "", fmt.Errorf("failed to partition download: %w", partErr)
+		}
+
+		if c.store != nil && jobID != "" {
+			_ = c.store.SaveCheckpoint(&Checkpoint{
+				ID:        jobID,
+				URL:       probe.FinalURL,
+				FinalPath: finalPath,
+				TotalSize: probe.ContentLength,
+				ETag:      probe.ETag,
+				Chunks:    chunks,
+				UpdatedAt: time.Now(),
+			})
+		}
+	}
+
+	// 3. Preallocate target disk space upfront
 	writer, err := storage.NewFileWriter(finalPath, probe.ContentLength)
 	if err != nil {
 		return "", fmt.Errorf("failed to preallocate staging file: %w", err)
@@ -53,7 +89,7 @@ func (c *Coordinator) DownloadParallel(ctx context.Context, probe *ResourceInfo,
 	committed := false
 	defer func() {
 		if !committed {
-			_ = writer.Discard()
+			_ = writer.Close() // Keep .part file intact on disk for future resumption
 		}
 	}()
 
@@ -62,24 +98,50 @@ func (c *Coordinator) DownloadParallel(ctx context.Context, probe *ResourceInfo,
 		downloadURL = probe.URL
 	}
 
+	retryCfg := DefaultRetryConfig()
 	g, gCtx := errgroup.WithContext(ctx)
+
 	for i := range chunks {
 		chunk := &chunks[i]
+		if chunk.Completed || chunk.Remaining() <= 0 {
+			continue // Skip already completed chunks
+		}
+
 		g.Go(func() error {
-			return downloadChunk(gCtx, c.client, downloadURL, chunk, writer)
+			return ExecuteWithRetry(gCtx, retryCfg, func() error {
+				return downloadChunk(gCtx, c.client, downloadURL, chunk, writer)
+			})
 		})
 	}
 
 	if err := g.Wait(); err != nil {
+		// Update checkpoint on error or pause before returning
+		if c.store != nil && jobID != "" {
+			_ = c.store.SaveCheckpoint(&Checkpoint{
+				ID:        jobID,
+				URL:       probe.FinalURL,
+				FinalPath: finalPath,
+				TotalSize: probe.ContentLength,
+				ETag:      probe.ETag,
+				Chunks:    chunks,
+				UpdatedAt: time.Now(),
+			})
+		}
 		return "", fmt.Errorf("parallel download error: %w", err)
 	}
 
-	// Flush dirty page buffers and commit staging .part file
+	// 4. Flush dirty page buffers and commit staging .part file
 	if err := writer.Commit(); err != nil {
 		return "", fmt.Errorf("failed to commit parallel download: %w", err)
 	}
 
 	committed = true
+
+	// 5. Clean up completed checkpoint
+	if c.store != nil && jobID != "" {
+		_ = c.store.DeleteCheckpoint(jobID)
+	}
+
 	return finalPath, nil
 }
 

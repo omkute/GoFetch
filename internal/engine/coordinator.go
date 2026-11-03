@@ -14,6 +14,7 @@ import (
 // Coordinator manages single-stream and multi-chunk download lifecycles.
 type Coordinator struct {
 	client *http.Client
+	store  CheckpointStore
 }
 
 // NewCoordinator creates a new download coordinator with the provided HTTP client.
@@ -22,6 +23,17 @@ func NewCoordinator(client *http.Client) *Coordinator {
 		client = http.DefaultClient
 	}
 	return &Coordinator{client: client}
+}
+
+// NewCoordinatorWithStore creates a new coordinator configured with a persistent CheckpointStore.
+func NewCoordinatorWithStore(client *http.Client, store CheckpointStore) *Coordinator {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return &Coordinator{
+		client: client,
+		store:  store,
+	}
 }
 
 // DownloadSingleStream executes a sequential streaming download of a resource,
