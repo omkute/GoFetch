@@ -20,8 +20,9 @@ func newListCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List active, queued, and completed downloads managed by the GoFetch daemon",
+		Use:          "list",
+		Short:        "List active, queued, and completed downloads managed by the GoFetch daemon",
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client := &http.Client{Timeout: 5 * time.Second}
 
@@ -32,7 +33,7 @@ func newListCmd() *cobra.Command {
 
 			resp, err := client.Get(endpoint) //nolint:gosec // local daemon IPC
 			if err != nil {
-				return fmt.Errorf("failed communicating with daemon at %s: %w", daemonAddr, err)
+				return fmt.Errorf("failed communicating with daemon at %s (is 'gofetch daemon' running?): %w", daemonAddr, err)
 			}
 			defer func() {
 				_ = resp.Body.Close()

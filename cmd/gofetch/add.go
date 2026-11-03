@@ -20,9 +20,10 @@ func newAddCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "add [url]",
-		Short: "Enqueue a new download task via the GoFetch daemon",
-		Args:  cobra.ExactArgs(1),
+		Use:          "add [url]",
+		Short:        "Enqueue a new download task via the GoFetch daemon",
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rawURL := args[0]
 			payload := api.CreateDownloadRequest{
@@ -41,7 +42,7 @@ func newAddCmd() *cobra.Command {
 			apiURL := fmt.Sprintf("http://%s/api/v1/downloads", daemonAddr)
 			resp, err := client.Post(apiURL, "application/json", bytes.NewReader(body)) //nolint:gosec // local daemon IPC
 			if err != nil {
-				return fmt.Errorf("failed communicating with daemon at %s: %w", daemonAddr, err)
+				return fmt.Errorf("failed communicating with daemon at %s (is 'gofetch daemon' running?): %w", daemonAddr, err)
 			}
 			defer func() {
 				_ = resp.Body.Close()

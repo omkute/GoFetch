@@ -64,7 +64,7 @@ func TestPauseCommand_Args(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error executing pause without task ID")
 	}
-	if !strings.Contains(err.Error(), "requires") && !strings.Contains(buf.String(), "Usage") {
+	if !strings.Contains(err.Error(), "accepts") && !strings.Contains(err.Error(), "requires") && !strings.Contains(buf.String(), "Usage") {
 		t.Errorf("expected missing arg error message, got %v", err)
 	}
 }

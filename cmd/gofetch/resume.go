@@ -14,9 +14,10 @@ func newResumeCmd() *cobra.Command {
 	var daemonAddr string
 
 	cmd := &cobra.Command{
-		Use:   "resume [id]",
-		Short: "Resume a paused download task",
-		Args:  cobra.ExactArgs(1),
+		Use:          "resume [id]",
+		Short:        "Resume a paused download task",
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
 			client := &http.Client{Timeout: 5 * time.Second}
@@ -24,7 +25,7 @@ func newResumeCmd() *cobra.Command {
 			endpoint := fmt.Sprintf("http://%s/api/v1/downloads/%s/resume", daemonAddr, id)
 			resp, err := client.Post(endpoint, "application/json", nil) //nolint:gosec // local daemon IPC
 			if err != nil {
-				return fmt.Errorf("failed communicating with daemon at %s: %w", daemonAddr, err)
+				return fmt.Errorf("failed communicating with daemon at %s (is 'gofetch daemon' running?): %w", daemonAddr, err)
 			}
 			defer func() {
 				_ = resp.Body.Close()
