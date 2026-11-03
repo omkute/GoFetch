@@ -4,6 +4,9 @@ bin/
 *.exe
 *.test
 *.tar.xz
+*.tar.gz
+*.tgz
+*.gz
 *.iso
 *.zip
 .DS_Store
