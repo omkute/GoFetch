@@ -10,7 +10,7 @@ build:
 	CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/gofetch ./cmd/gofetch
 
 run:
-	go run cmd/gofetch/main.go
+	go run ./cmd/gofetch
 
 test:
 	go test -v -race ./...
