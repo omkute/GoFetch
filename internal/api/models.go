@@ -36,6 +36,7 @@ type DownloadItem struct {
 	SpeedBps        int64   `json:"speed_bps"`
 	ETASeconds      int64   `json:"eta_seconds"`
 	Category        string  `json:"category"`
+	Error           string  `json:"error,omitempty"`
 }
 
 // ListDownloadsResponse wraps the paginated items returned by GET /api/v1/downloads.
@@ -66,6 +67,7 @@ type DownloadDetailResponse struct {
 	SpeedBps        int64         `json:"speed_bps"`
 	ETASeconds      int64         `json:"eta_seconds"`
 	Category        string        `json:"category"`
+	Error           string        `json:"error,omitempty"`
 	Chunks          []ChunkDetail `json:"chunks"`
 }
 

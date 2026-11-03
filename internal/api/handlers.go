@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"path"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	chi "github.com/go-chi/chi/v5"
 	"github.com/omkute/gofetch/internal/engine"
+	"github.com/omkute/gofetch/internal/ui"
 )
 
 type jobRecord struct {
@@ -32,6 +34,7 @@ type jobRecord struct {
 	Chunks          []ChunkDetail
 	maxChunks       int
 	destDir         string
+	Error           string
 	cancel          context.CancelFunc
 }
 
@@ -126,6 +129,8 @@ func (s *Server) runDownload(record *jobRecord) {
 		s.jobsMu.Lock()
 		if !errors.Is(err, context.Canceled) {
 			record.Status = "failed"
+			record.Error = err.Error()
+			log.Printf("[Daemon] Download [%s] (%s) probe failed: %v", record.ID[:8], record.URL, err)
 		}
 		s.jobsMu.Unlock()
 		return
@@ -142,6 +147,8 @@ func (s *Server) runDownload(record *jobRecord) {
 		record.TargetPath = filepath.Join(targetDir, probe.Filename)
 	}
 	record.TotalBytes = probe.ContentLength
+	log.Printf("[Daemon] Started download [%s]: %s (size: %s, chunks: %d)",
+		record.ID[:8], record.FileName, ui.FormatBytes(record.TotalBytes), record.maxChunks)
 	s.jobsMu.Unlock()
 
 	coord := engine.NewCoordinator(client)
@@ -182,6 +189,8 @@ func (s *Server) runDownload(record *jobRecord) {
 			return
 		}
 		record.Status = "failed"
+		record.Error = err.Error()
+		log.Printf("[Daemon] Download [%s] transfer failed: %v", record.ID[:8], err)
 		return
 	}
 
@@ -190,6 +199,7 @@ func (s *Server) runDownload(record *jobRecord) {
 	record.TargetPath = finalPath
 	record.SpeedBps = 0
 	record.ETASeconds = 0
+	log.Printf("[Daemon] Completed download [%s]: %s -> %s", record.ID[:8], record.FileName, finalPath)
 }
 
 func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +231,7 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 			SpeedBps:        job.SpeedBps,
 			ETASeconds:      job.ETASeconds,
 			Category:        job.Category,
+			Error:           job.Error,
 		})
 	}
 
@@ -255,6 +266,7 @@ func (s *Server) handleGetDownload(w http.ResponseWriter, r *http.Request) {
 		SpeedBps:        job.SpeedBps,
 		ETASeconds:      job.ETASeconds,
 		Category:        job.Category,
+		Error:           job.Error,
 		Chunks:          job.Chunks,
 	}
 	s.jobsMu.RUnlock()

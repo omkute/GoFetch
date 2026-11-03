@@ -57,6 +57,10 @@ func newListCmd() *cobra.Command {
 			_, _ = fmt.Fprintln(w, "ID\tFILENAME\tSTATUS\tPRIORITY\tPROGRESS\tSPEED\tETA")
 			for _, item := range listResp.Items {
 				pctStr := fmt.Sprintf("%.1f%%", item.ProgressPercent)
+				statusStr := item.Status
+				if item.Status == "failed" && item.Error != "" {
+					statusStr = fmt.Sprintf("failed (%s)", item.Error)
+				}
 				speedStr := "-"
 				if item.SpeedBps > 0 {
 					speedStr = ui.FormatBytes(item.SpeedBps) + "/s"
@@ -66,7 +70,7 @@ func newListCmd() *cobra.Command {
 					etaStr = ui.FormatDuration(time.Duration(item.ETASeconds) * time.Second)
 				}
 				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-					item.ID, item.FileName, item.Status, item.Priority, pctStr, speedStr, etaStr)
+					item.ID, item.FileName, statusStr, item.Priority, pctStr, speedStr, etaStr)
 			}
 			return w.Flush()
 		},
