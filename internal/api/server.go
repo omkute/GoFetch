@@ -26,6 +26,26 @@ type Server struct {
 	jobsMu     sync.RWMutex
 }
 
+func defaultStreamingClient() *http.Client {
+	return &http.Client{
+		Timeout: 0, // No overall timeout; allows streaming arbitrarily large files without arbitrary deadlines
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   10,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+	}
+}
+
 // NewServer creates a new Server instance configured for the provided address.
 // If addr is empty, DefaultAddr is used.
 func NewServer(addr string) *Server {
@@ -36,7 +56,7 @@ func NewServer(addr string) *Server {
 		addr:       addr,
 		ready:      make(chan struct{}),
 		jobs:       make(map[string]*jobRecord),
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: defaultStreamingClient(),
 	}
 }
 

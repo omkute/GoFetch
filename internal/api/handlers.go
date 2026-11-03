@@ -124,7 +124,9 @@ func (s *Server) runDownload(record *jobRecord) {
 	s.jobsMu.Unlock()
 
 	client := s.getClient()
-	probe, err := engine.Probe(ctx, client, record.URL)
+	probeCtx, probeCancel := context.WithTimeout(ctx, 30*time.Second)
+	probe, err := engine.Probe(probeCtx, client, record.URL)
+	probeCancel()
 	if err != nil {
 		s.jobsMu.Lock()
 		if !errors.Is(err, context.Canceled) {
@@ -158,6 +160,7 @@ func (s *Server) runDownload(record *jobRecord) {
 
 	opts := engine.DownloadOptions{
 		DestDir:    targetDir,
+		JobID:      record.ID,
 		MaxWorkers: record.maxChunks,
 		ProgressFn: func(chunkIndex int, bytesRead int) {
 			s.jobsMu.Lock()
@@ -310,6 +313,7 @@ func (s *Server) handleResumeDownload(w http.ResponseWriter, r *http.Request) {
 	job, exists := s.jobs[id]
 	if exists {
 		job.Status = "resumed"
+		job.Error = ""
 		go s.runDownload(job)
 	}
 	s.jobsMu.Unlock()
