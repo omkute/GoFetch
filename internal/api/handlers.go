@@ -448,7 +448,7 @@ func (s *Server) handleResumeDownload(w http.ResponseWriter, r *http.Request) {
 	s.jobsMu.Lock()
 	job, exists := s.jobs[id]
 	if exists {
-		job.Status = "queued"
+		job.Status = "resumed"
 		job.Error = ""
 		s.persistJob(job)
 		schedTask := &queue.Task{

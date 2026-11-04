@@ -24,6 +24,7 @@ built for extreme reliability, high throughput, and seamless pause/resume.`,
 	}
 
 	cmd.AddCommand(newDaemonCmd())
+	cmd.AddCommand(newGUICmd())
 	cmd.AddCommand(newAddCmd())
 	cmd.AddCommand(newListCmd())
 	cmd.AddCommand(newPauseCmd())

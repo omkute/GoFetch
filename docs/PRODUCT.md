@@ -82,8 +82,28 @@
 
 ---
 
-## 5. Future Roadmap Preview (Post-v1)
+## 4. Acceptance Criteria for v2
 
-* **v2 — Native Desktop GUI**: Cross-platform desktop interface (e.g., Wails/Fyne) providing a visual queue manager, category drawer, and speed graphs.
+### Desktop & Web GUI
+* **Embedded Zero-Dependency Web GUI**: Self-contained SPA embedded directly into the binary via `embed.FS` and served on `http://127.0.0.1:12701/`.
+* **Desktop Browser Opener**: `gofetch gui` (and aliases `web`, `dashboard`) auto-launches the user's default browser cross-platform (macOS, Linux, Windows).
+* **Real-Time Bandwidth Visualization**: Live 60-second time-series speed graph rendered on HTML5 Canvas.
+* **Category Drawer & Filter Tabs**: Granular filtering by category (Videos, Audio, Documents, Archives, Software, Images, Others) and lifecycle status (Active, Queued, Paused, Completed, Failed).
+* **Global Controls**: Dynamic global bandwidth throttle dropdown, Pause All, and Resume All buttons.
+
+### Bandwidth Limiting & Batch Processing
+* **Dynamic Bandwidth Limiter**: Token-bucket rate limiter supporting both per-task (`--rate-limit 5MB`) and global engine speed caps with hot dynamic updates via API and GUI.
+* **Batch URL Ingestion**: Support for multi-line URL batch files via `--input-file` / `-f` CLI flag and `POST /api/v1/downloads/batch`.
+
+### Persistence & Real-Time IPC
+* **Durable Task Store**: Embedded BBolt database (`~/.gofetch/daemon_tasks.db`) preserving tasks across daemon restarts with automatic pause-recovery.
+* **Server-Sent Events (SSE)**: `GET /api/v1/events` streaming sub-100ms real-time progress and lifecycle events directly from the asynchronous event bus.
+* **System Telemetry**: `GET /api/v1/system/stats` reporting active/queued counts, aggregate speed, memory metrics, and uptime.
+* **YAML Configuration**: Centralized configuration management (`~/.gofetch/config.yaml` or `--config`) for concurrency, network, and storage defaults.
+
+---
+
+## 5. Future Roadmap Preview (Post-v2)
+
 * **v3 — Browser Companion Extension**: Browser extension (Chrome, Firefox, Edge) utilizing the Native Messaging API to automatically capture downloads without manual terminal copying.
-* **v4 — Remote Daemon & Webhook Ecosystem**: Headless daemon with local RPC/REST endpoints for remote web UI management and webhook notifications upon download completion.
+* **v4 — Remote Daemon & Webhook Ecosystem**: Remote headless daemon with authenticated external REST/WebSocket endpoints and webhook notifications upon download completion.

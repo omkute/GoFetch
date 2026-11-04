@@ -337,6 +337,81 @@ When running in daemon mode, GoFetch binds to `127.0.0.1:12701` (or local Unix D
   "total_speed_bps": 32500000,
   "open_connections": 16,
   "memory_allocated_bytes": 48234496,
-  "uptime_seconds": 3600
+  "uptime_seconds": 3600,
+  "global_rate_limit_bps": 10485760
 }
 ```
+
+---
+
+### 5.8 Batch Enqueue Downloads
+* **Method & Path**: `POST /api/v1/downloads/batch`
+* **Description**: Enqueues multiple download jobs in a single atomic request.
+* **Request JSON**:
+```json
+{
+  "urls": [
+    "https://example.com/file1.iso",
+    "https://example.com/file2.iso"
+  ],
+  "destination_dir": "/home/user/Downloads",
+  "priority": "normal",
+  "max_chunks": 4,
+  "rate_limit": "5MB"
+}
+```
+* **Response JSON (`202 Accepted`)**:
+```json
+{
+  "enqueued": 2,
+  "items": [
+    {
+      "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "url": "https://example.com/file1.iso",
+      "file_name": "file1.iso",
+      "status": "queued",
+      "priority": "normal",
+      "created_at": "2026-11-04T12:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### 5.9 Real-Time Event Stream (Server-Sent Events)
+* **Method & Path**: `GET /api/v1/events`
+* **Description**: Real-time event stream (`text/event-stream`) delivering sub-100ms progress frames and lifecycle events directly from the asynchronous event bus.
+* **Event Format**:
+```
+event: progress
+data: {"active_downloads":2,"total_speed_bps":12500000,"downloads":[...]}
+
+event: download.started
+data: {"type":"download.started","job_id":"f47ac10b-...","timestamp":"2026-11-04T12:00:00Z"}
+```
+
+---
+
+### 5.10 Dynamic Global Rate Limit
+* **Method & Path**: `POST /api/v1/system/rate-limit`
+* **Description**: Dynamically updates the global engine bandwidth cap without interrupting ongoing transfers.
+* **Request JSON**:
+```json
+{
+  "rate_limit": "10MB"
+}
+```
+
+---
+
+### 5.11 Global Download Controls
+* **Method & Path**: `POST /api/v1/downloads/pause-all` & `POST /api/v1/downloads/resume-all`
+* **Description**: Simultaneously suspends or resumes all registered download jobs.
+
+---
+
+### 5.12 Embedded Web GUI Dashboard
+* **Method & Path**: `GET /` and `GET /*`
+* **Description**: Serves the embedded single-page responsive dashboard directly from the Go binary via `embed.FS`.
+
