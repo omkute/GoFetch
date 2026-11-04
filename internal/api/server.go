@@ -7,6 +7,10 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/omkute/gofetch/internal/engine"
+	"github.com/omkute/gofetch/internal/queue"
+	"github.com/omkute/gofetch/internal/state"
 )
 
 // DefaultAddr is the standard loopback address and port for the GoFetch daemon.
@@ -24,6 +28,12 @@ type Server struct {
 	httpClient *http.Client
 	jobs       map[string]*jobRecord
 	jobsMu     sync.RWMutex
+
+	scheduler         *queue.Scheduler
+	taskStore         *state.TaskStore
+	eventBus          *state.EventBus
+	globalRateLimiter *engine.RateLimiter
+	startTime         time.Time
 }
 
 func defaultStreamingClient() *http.Client {
@@ -53,10 +63,14 @@ func NewServer(addr string) *Server {
 		addr = DefaultAddr
 	}
 	return &Server{
-		addr:       addr,
-		ready:      make(chan struct{}),
-		jobs:       make(map[string]*jobRecord),
-		httpClient: defaultStreamingClient(),
+		addr:              addr,
+		ready:             make(chan struct{}),
+		jobs:              make(map[string]*jobRecord),
+		httpClient:        defaultStreamingClient(),
+		scheduler:         queue.NewScheduler(3),
+		eventBus:          state.NewEventBus(1024),
+		globalRateLimiter: engine.NewRateLimiter(0),
+		startTime:         time.Now().UTC(),
 	}
 }
 
@@ -74,6 +88,106 @@ func (s *Server) getClient() *http.Client {
 		return s.httpClient
 	}
 	return http.DefaultClient
+}
+
+// SetTaskStore sets a persistent TaskStore for daemon task durability.
+func (s *Server) SetTaskStore(store *state.TaskStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.taskStore = store
+}
+
+// TaskStore returns the server's task store if configured.
+func (s *Server) TaskStore() *state.TaskStore {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.taskStore
+}
+
+// SetScheduler replaces the queue scheduler.
+func (s *Server) SetScheduler(sched *queue.Scheduler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scheduler = sched
+}
+
+// Scheduler returns the active queue scheduler.
+func (s *Server) Scheduler() *queue.Scheduler {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.scheduler
+}
+
+// EventBus returns the active event bus.
+func (s *Server) EventBus() *state.EventBus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.eventBus
+}
+
+// GlobalRateLimiter returns the engine's global bandwidth limiter.
+func (s *Server) GlobalRateLimiter() *engine.RateLimiter {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.globalRateLimiter
+}
+
+// SetGlobalRateLimit sets the global bandwidth cap in bytes per second.
+func (s *Server) SetGlobalRateLimit(bps int64) {
+	s.mu.RLock()
+	lim := s.globalRateLimiter
+	s.mu.RUnlock()
+	if lim != nil {
+		lim.SetLimit(bps)
+	}
+}
+
+func (s *Server) loadPersistedTasks() {
+	s.mu.RLock()
+	ts := s.taskStore
+	s.mu.RUnlock()
+	if ts == nil {
+		return
+	}
+
+	tasks, err := ts.ListTasks()
+	if err != nil {
+		return
+	}
+
+	s.jobsMu.Lock()
+	defer s.jobsMu.Unlock()
+	for _, t := range tasks {
+		status := t.Status
+		errMsg := t.Error
+		if status == "downloading" || status == "queued" {
+			status = "paused"
+			errMsg = "Interrupted by daemon restart"
+			t.Status = status
+			t.Error = errMsg
+			_ = ts.SaveTask(t)
+		}
+
+		s.jobs[t.ID] = &jobRecord{
+			ID:              t.ID,
+			URL:             t.URL,
+			FileName:        t.FileName,
+			TargetPath:      t.TargetPath,
+			Status:          status,
+			Priority:        t.Priority,
+			TotalBytes:      t.TotalBytes,
+			DownloadedBytes: t.DownloadedBytes,
+			SpeedBps:        t.SpeedBps,
+			ETASeconds:      t.ETASeconds,
+			Category:        t.Category,
+			CreatedAt:       t.CreatedAt,
+			Chunks:          make([]ChunkDetail, 0),
+			maxChunks:       t.MaxChunks,
+			destDir:         t.DestDir,
+			rateLimitStr:    t.RateLimit,
+			Error:           errMsg,
+		}
+	}
 }
 
 // Router returns the configured HTTP handler with all registered API routes.
@@ -98,6 +212,9 @@ func (s *Server) Ready() <-chan struct{} {
 
 // Start begins listening on the configured address and serves incoming HTTP requests.
 func (s *Server) Start() error {
+	s.scheduler.Start(context.Background())
+	s.loadPersistedTasks()
+
 	s.mu.Lock()
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
@@ -122,6 +239,8 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully stops the HTTP server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.scheduler.Stop()
+
 	s.jobsMu.Lock()
 	for _, job := range s.jobs {
 		if job.cancel != nil {
@@ -132,7 +251,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	s.mu.Lock()
 	server := s.httpServer
+	ts := s.taskStore
 	s.mu.Unlock()
+
+	if ts != nil {
+		_ = ts.Close()
+	}
+	s.eventBus.Close()
 
 	if server == nil {
 		return nil

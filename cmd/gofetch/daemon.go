@@ -6,15 +6,21 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/omkute/gofetch/internal/api"
+	"github.com/omkute/gofetch/internal/engine"
+	"github.com/omkute/gofetch/internal/state"
 	"github.com/spf13/cobra"
 )
 
 func newDaemonCmd() *cobra.Command {
-	var daemonAddr string
+	var (
+		daemonAddr string
+		rateLimit  string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "daemon",
@@ -22,6 +28,21 @@ func newDaemonCmd() *cobra.Command {
 		Long:  "Runs the GoFetch engine as a persistent loopback service on 127.0.0.1:12701.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			server := api.NewServer(daemonAddr)
+
+			homeDir, err := os.UserHomeDir()
+			if err == nil {
+				dbPath := filepath.Join(homeDir, ".gofetch", "daemon_tasks.db")
+				if store, storeErr := state.NewTaskStore(dbPath); storeErr == nil {
+					server.SetTaskStore(store)
+				}
+			}
+
+			if rateLimit != "" {
+				if bps, parseErr := engine.ParseRateLimit(rateLimit); parseErr == nil && bps > 0 {
+					server.SetGlobalRateLimit(bps)
+					log.Printf("Global rate limit applied: %s (%d bytes/sec)", rateLimit, bps)
+				}
+			}
 
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -47,5 +68,6 @@ func newDaemonCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&daemonAddr, "addr", api.DefaultAddr, "Address and port for loopback daemon")
+	cmd.Flags().StringVarP(&rateLimit, "rate-limit", "l", "", "Global bandwidth rate limit (e.g. 5MB, 10M)")
 	return cmd
 }
