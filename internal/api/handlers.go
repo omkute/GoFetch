@@ -79,18 +79,7 @@ func (s *Server) persistJob(job *jobRecord) {
 	})
 }
 
-func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
-	var req CreateDownloadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
-		return
-	}
-
-	if req.URL == "" {
-		http.Error(w, `{"error":"url is required"}`, http.StatusBadRequest)
-		return
-	}
-
+func (s *Server) enqueueDownload(req CreateDownloadRequest) DownloadResponse {
 	priority := req.Priority
 	if priority == "" {
 		priority = "normal"
@@ -148,10 +137,6 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: record.CreatedAt,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(resp)
-
 	schedTask := &queue.Task{
 		ID:        record.ID,
 		URL:       record.URL,
@@ -163,6 +148,26 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = s.scheduler.Submit(schedTask)
+	return resp
+}
+
+func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
+	var req CreateDownloadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
+
+	if req.URL == "" {
+		http.Error(w, `{"error":"url is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	resp := s.enqueueDownload(req)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
