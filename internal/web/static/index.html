@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GoFetch v2 — High-Performance Download Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Top Navigation Bar -->
+  <header class="navbar">
+    <div class="nav-brand">
+      <div class="logo-icon">⚡</div>
+      <div class="brand-text">
+        <span class="brand-title">GoFetch</span>
+        <span class="brand-badge">v2.0</span>
+      </div>
+    </div>
+
+    <!-- Live Telemetry Bar -->
+    <div class="telemetry-bar">
+      <div class="telemetry-item">
+        <span class="label">SPEED</span>
+        <span class="val highlight" id="header-speed">0.0 MB/s</span>
+      </div>
+      <div class="telemetry-item">
+        <span class="label">ACTIVE</span>
+        <span class="val" id="header-active">0</span>
+      </div>
+      <div class="telemetry-item">
+        <span class="label">LIMIT</span>
+        <select id="global-rate-limit-select" class="rate-select">
+          <option value="0">Uncapped</option>
+          <option value="1MB">1 MB/s</option>
+          <option value="5MB">5 MB/s</option>
+          <option value="10MB">10 MB/s</option>
+          <option value="25MB">25 MB/s</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Quick Action Buttons -->
+    <div class="nav-actions">
+      <button class="btn btn-secondary" id="btn-pause-all">⏸ Pause All</button>
+      <button class="btn btn-secondary" id="btn-resume-all">▶ Resume All</button>
+      <button class="btn btn-primary" id="btn-open-modal">+ New Download</button>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <div class="app-layout">
+    <!-- Sidebar: Categories & Filters -->
+    <aside class="sidebar">
+      <div class="sidebar-section">
+        <h4 class="sidebar-title">FILTERS</h4>
+        <ul class="nav-list" id="status-filters">
+          <li class="nav-item active" data-status="all">
+            <span>All Tasks</span>
+            <span class="badge" id="badge-all">0</span>
+          </li>
+          <li class="nav-item" data-status="downloading">
+            <span>Downloading</span>
+            <span class="badge badge-accent" id="badge-downloading">0</span>
+          </li>
+          <li class="nav-item" data-status="queued">
+            <span>Queued</span>
+            <span class="badge" id="badge-queued">0</span>
+          </li>
+          <li class="nav-item" data-status="paused">
+            <span>Paused</span>
+            <span class="badge badge-warning" id="badge-paused">0</span>
+          </li>
+          <li class="nav-item" data-status="completed">
+            <span>Completed</span>
+            <span class="badge badge-success" id="badge-completed">0</span>
+          </li>
+          <li class="nav-item" data-status="failed">
+            <span>Failed</span>
+            <span class="badge badge-danger" id="badge-failed">0</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="sidebar-section">
+        <h4 class="sidebar-title">CATEGORIES</h4>
+        <ul class="nav-list" id="category-filters">
+          <li class="nav-item active" data-category="all">
+            <span>📁 All Categories</span>
+          </li>
+          <li class="nav-item" data-category="Videos">
+            <span>🎬 Videos</span>
+            <span class="badge" id="cat-videos">0</span>
+          </li>
+          <li class="nav-item" data-category="Audio">
+            <span>🎵 Audio</span>
+            <span class="badge" id="cat-audio">0</span>
+          </li>
+          <li class="nav-item" data-category="Documents">
+            <span>📄 Documents</span>
+            <span class="badge" id="cat-docs">0</span>
+          </li>
+          <li class="nav-item" data-category="Archives">
+            <span>📦 Archives</span>
+            <span class="badge" id="cat-archives">0</span>
+          </li>
+          <li class="nav-item" data-category="Software">
+            <span>💻 Software</span>
+            <span class="badge" id="cat-software">0</span>
+          </li>
+          <li class="nav-item" data-category="Images">
+            <span>🖼 Images</span>
+            <span class="badge" id="cat-images">0</span>
+          </li>
+          <li class="nav-item" data-category="Miscellaneous">
+            <span>📂 Others</span>
+            <span class="badge" id="cat-misc">0</span>
+          </li>
+        </ul>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Live Speed Chart Card -->
+      <section class="card chart-card">
+        <div class="card-header">
+          <span class="card-title">Real-Time Bandwidth Utilization</span>
+          <span class="card-subtitle" id="chart-sub">Live 60s history</span>
+        </div>
+        <div class="canvas-wrapper">
+          <canvas id="speed-chart" height="120"></canvas>
+        </div>
+      </section>
+
+      <!-- Downloads List Card -->
+      <section class="card list-card">
+        <div class="card-header">
+          <span class="card-title" id="list-title">Active & Queued Downloads</span>
+          <span class="card-count" id="list-count">0 items</span>
+        </div>
+
+        <div id="empty-state" class="empty-state">
+          <div class="empty-icon">📥</div>
+          <div class="empty-title">No downloads found</div>
+          <p class="empty-desc">Click "+ New Download" or drop links to begin accelerated multi-chunk retrieval.</p>
+        </div>
+
+        <div class="tasks-table-container">
+          <table class="tasks-table" id="tasks-table" style="display:none;">
+            <thead>
+              <tr>
+                <th>File / URL</th>
+                <th>Status</th>
+                <th>Priority</th>
+                <th>Progress</th>
+                <th>Speed & ETA</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tasks-tbody">
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Add Download Modal -->
+  <div class="modal-backdrop" id="add-modal" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title">Enqueue New Download</h3>
+        <button class="modal-close" id="modal-close-btn">&times;</button>
+      </div>
+
+      <form id="add-form">
+        <div class="form-group">
+          <label for="input-url">Download URL (or multiple URLs, one per line)</label>
+          <textarea id="input-url" class="form-control" rows="3" placeholder="https://example.com/file.iso&#10;https://example.com/archive.tar.gz" required></textarea>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group col">
+            <label for="input-priority">Priority</label>
+            <select id="input-priority" class="form-control">
+              <option value="normal" selected>Normal</option>
+              <option value="high">High (Preempts queue)</option>
+              <option value="low">Low (Background)</option>
+            </select>
+          </div>
+
+          <div class="form-group col">
+            <label for="input-chunks">Parallel Chunks</label>
+            <input type="number" id="input-chunks" class="form-control" value="4" min="1" max="16">
+          </div>
+
+          <div class="form-group col">
+            <label for="input-rate">Speed Limit (Optional)</label>
+            <input type="text" id="input-rate" class="form-control" placeholder="e.g. 5MB, 500KB, 0">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="input-dest">Destination Directory (Optional)</label>
+          <input type="text" id="input-dest" class="form-control" placeholder="Default: system Downloads directory">
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="modal-cancel-btn">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="modal-submit-btn">Start Download</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
