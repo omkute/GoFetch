@@ -17,6 +17,7 @@ func newAddCmd() *cobra.Command {
 		chunks     int
 		destDir    string
 		daemonAddr string
+		rateLimit  string
 	)
 
 	cmd := &cobra.Command{
@@ -31,6 +32,7 @@ func newAddCmd() *cobra.Command {
 				DestinationDir: destDir,
 				Priority:       priority,
 				MaxChunks:      chunks,
+				RateLimit:      rateLimit,
 			}
 
 			body, err := json.Marshal(payload)
@@ -66,6 +68,7 @@ func newAddCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&priority, "priority", "p", "normal", "Scheduling priority (low, normal, high)")
 	cmd.Flags().IntVarP(&chunks, "chunks", "c", 4, "Number of concurrent chunk download workers")
 	cmd.Flags().StringVarP(&destDir, "dir", "d", ".", "Target download directory")
+	cmd.Flags().StringVarP(&rateLimit, "rate-limit", "l", "", "Bandwidth limit (e.g. 500KB, 2MB, 10M)")
 	cmd.Flags().StringVar(&daemonAddr, "daemon-addr", api.DefaultAddr, "Address of local daemon")
 
 	return cmd

@@ -12,10 +12,11 @@ type ConcurrencyLimiter interface {
 
 // DownloadOptions configures the execution parameters of a download coordinator.
 type DownloadOptions struct {
-	DestDir    string
-	JobID      string
-	MaxWorkers int
-	Sequential bool
-	Semaphore  ConcurrencyLimiter
-	ProgressFn func(chunkIndex int, bytesRead int)
+	DestDir     string
+	JobID       string
+	MaxWorkers  int
+	Sequential  bool
+	Semaphore   ConcurrencyLimiter
+	RateLimiter *RateLimiter
+	ProgressFn  func(chunkIndex int, bytesRead int)
 }

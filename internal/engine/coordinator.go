@@ -94,6 +94,11 @@ func (c *Coordinator) DownloadSingleStreamWithOptions(ctx context.Context, probe
 	buf := make([]byte, 32*1024) // 32 KB streaming buffer
 	var offset int64
 
+	var src io.Reader = resp.Body
+	if opts.RateLimiter != nil && opts.RateLimiter.Limit() > 0 {
+		src = NewLimitedReader(ctx, resp.Body, opts.RateLimiter)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -101,7 +106,7 @@ func (c *Coordinator) DownloadSingleStreamWithOptions(ctx context.Context, probe
 		default:
 		}
 
-		n, readErr := resp.Body.Read(buf)
+		n, readErr := src.Read(buf)
 		if n > 0 {
 			_, writeErr := writer.WriteAt(buf[:n], offset)
 			if writeErr != nil {

@@ -11,6 +11,7 @@ type CreateDownloadRequest struct {
 	Checksum       string `json:"checksum"`
 	ChecksumAlgo   string `json:"checksum_algo"`
 	AutoClassify   bool   `json:"auto_classify"`
+	RateLimit      string `json:"rate_limit,omitempty"`
 }
 
 // DownloadResponse is the response returned when a download is enqueued.

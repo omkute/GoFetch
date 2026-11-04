@@ -212,3 +212,38 @@ This backlog organizes the implementation of **GoFetch** v1 into 11 dependency-o
   * `internal/state/event_bus_test.go`, `bench/bench_storage_test.go`
 * **Testable Outcome**:
   * Benchmark confirms that streaming throughput and latency remain completely unchanged whether PostgreSQL telemetry persistence is enabled or disabled.
+
+---
+
+### Milestone 4: GoFetch v2 (Control, Persistence & Desktop GUI)
+
+#### `T-012`: Bandwidth Limiter & Rate Limiting Engine
+* **Milestone**: 4 (GoFetch v2)
+* **Dependencies**: `T-011`
+* **Scope**: Token-bucket rate limiter, global and per-download speed controls, CLI `--rate-limit` flag.
+
+#### `T-013`: Persistent Daemon Task Store & Queue Integration
+* **Milestone**: 4 (GoFetch v2)
+* **Dependencies**: `T-012`
+* **Scope**: Embedded bbolt task store, daemon crash recovery, wiring queue PriorityHeap and semaphore.
+
+#### `T-014`: Real-Time Daemon SSE Stream & System Endpoints
+* **Milestone**: 4 (GoFetch v2)
+* **Dependencies**: `T-013`
+* **Scope**: `GET /api/v1/events` SSE stream, `GET /api/v1/system/stats`, `POST /api/v1/downloads/batch`, pause-all/resume-all.
+
+#### `T-015`: Configuration Management System
+* **Milestone**: 4 (GoFetch v2)
+* **Dependencies**: `T-014`
+* **Scope**: `config.yaml` loader, default profiles, custom category mappings, CLI `--config` flag.
+
+#### `T-016`: Embedded Modern Desktop / Web GUI
+* **Milestone**: 4 (GoFetch v2)
+* **Dependencies**: `T-015`
+* **Scope**: Embedded single-page app via `embed.FS`, live speed chart, visual queue manager, category drawer, chunk visualizer.
+
+#### `T-017`: CLI `gui` Command & Batch Ingestion
+* **Milestone**: 4 (GoFetch v2)
+* **Dependencies**: `T-016`
+* **Scope**: `gofetch gui` command, `--input-file` URL batch import, comprehensive end-to-end integration test suite.
+

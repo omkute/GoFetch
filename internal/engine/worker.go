@@ -130,7 +130,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 			}
 
 			dlErr := ExecuteWithRetry(ctx, retryCfg, func() error {
-				return downloadChunk(ctx, c.client, downloadURL, chunk, writer, opts.ProgressFn)
+				return downloadChunk(ctx, c.client, downloadURL, chunk, writer, opts.RateLimiter, opts.ProgressFn)
 			})
 
 			if opts.Semaphore != nil {
@@ -170,7 +170,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 				}
 
 				return ExecuteWithRetry(gCtx, retryCfg, func() error {
-					return downloadChunk(gCtx, c.client, downloadURL, chunk, writer, opts.ProgressFn)
+					return downloadChunk(gCtx, c.client, downloadURL, chunk, writer, opts.RateLimiter, opts.ProgressFn)
 				})
 			})
 		}
@@ -207,7 +207,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 }
 
 // downloadChunk streams an individual byte range [Current, End] directly into disk via WriteAt.
-func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *Chunk, writer *storage.FileWriter, progressFn func(chunkIndex int, bytesRead int)) error {
+func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *Chunk, writer *storage.FileWriter, limiter *RateLimiter, progressFn func(chunkIndex int, bytesRead int)) error {
 	if chunk.Completed || chunk.Remaining() <= 0 {
 		return nil
 	}
@@ -237,6 +237,11 @@ func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *
 		}
 	}
 
+	var src io.Reader = resp.Body
+	if limiter != nil && limiter.Limit() > 0 {
+		src = NewLimitedReader(ctx, resp.Body, limiter)
+	}
+
 	buf := make([]byte, 32*1024) // 32 KB chunk buffer
 	for {
 		select {
@@ -245,7 +250,7 @@ func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *
 		default:
 		}
 
-		n, readErr := resp.Body.Read(buf)
+		n, readErr := src.Read(buf)
 		if n > 0 {
 			// Enforce non-overlapping boundary bounds
 			if chunk.Current+int64(n)-1 > chunk.End {
