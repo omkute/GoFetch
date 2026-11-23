@@ -16,6 +16,7 @@ type BatchDownloadRequest struct {
 	Priority       string   `json:"priority"`
 	MaxChunks      int      `json:"max_chunks"`
 	RateLimit      string   `json:"rate_limit"`
+	NoOrganize     bool     `json:"no_organize,omitempty"`
 }
 
 // BatchDownloadResponse confirms the enqueued tasks.
@@ -47,6 +48,7 @@ func (s *Server) handleBatchCreateDownloads(w http.ResponseWriter, r *http.Reque
 			Priority:       req.Priority,
 			MaxChunks:      req.MaxChunks,
 			RateLimit:      req.RateLimit,
+			NoOrganize:     req.NoOrganize,
 		}
 		resp := s.enqueueDownload(singleReq)
 		items = append(items, resp)

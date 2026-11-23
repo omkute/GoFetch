@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/omkute/gofetch/internal/engine"
 	"github.com/omkute/gofetch/internal/queue"
 	"github.com/omkute/gofetch/internal/state"
+	"github.com/omkute/gofetch/internal/storage"
 	"github.com/omkute/gofetch/internal/ui"
 )
 
@@ -40,6 +42,9 @@ type jobRecord struct {
 	destDir         string
 	rateLimitStr    string
 	rateLimiter     *engine.RateLimiter
+	checksum        string
+	checksumAlgo    string
+	autoClassify    bool
 	Error           string
 	cancel          context.CancelFunc
 }
@@ -74,6 +79,9 @@ func (s *Server) persistJob(job *jobRecord) {
 		DestDir:         job.destDir,
 		MaxChunks:       job.maxChunks,
 		RateLimit:       job.rateLimitStr,
+		Checksum:        job.checksum,
+		ChecksumAlgo:    job.checksumAlgo,
+		AutoClassify:    job.autoClassify,
 		CreatedAt:       job.CreatedAt,
 		UpdatedAt:       time.Now().UTC(),
 	})
@@ -107,6 +115,14 @@ func (s *Server) enqueueDownload(req CreateDownloadRequest) DownloadResponse {
 	rawName := path.Base(cleanURL)
 	fileName := engine.SanitizeFilename(rawName)
 
+	// Classification flag
+	autoClassify := true
+	if req.NoOrganize {
+		autoClassify = false
+	} else if req.AutoClassify != nil {
+		autoClassify = *req.AutoClassify
+	}
+
 	id := generateID()
 	record := &jobRecord{
 		ID:           id,
@@ -121,6 +137,9 @@ func (s *Server) enqueueDownload(req CreateDownloadRequest) DownloadResponse {
 		destDir:      destDir,
 		rateLimitStr: req.RateLimit,
 		rateLimiter:  limiter,
+		checksum:     req.Checksum,
+		checksumAlgo: req.ChecksumAlgo,
+		autoClassify: autoClassify,
 	}
 
 	s.jobsMu.Lock()
@@ -310,20 +329,53 @@ func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
 		return err
 	}
 
+	// Verify checksum if provided
+	if record.checksum != "" {
+		algo := storage.AlgorithmSHA256
+		if strings.EqualFold(record.checksumAlgo, "md5") {
+			algo = storage.AlgorithmMD5
+		}
+		valid, checkErr := storage.VerifyFile(finalPath, record.checksum, algo)
+		if checkErr != nil || !valid {
+			record.Status = "failed"
+			if checkErr != nil {
+				record.Error = fmt.Sprintf("checksum verification error: %v", checkErr)
+			} else {
+				record.Error = fmt.Sprintf("checksum mismatch: expected %s (%s)", record.checksum, algo)
+			}
+			s.persistJob(record)
+			log.Printf("[Daemon] Download [%s] checksum failure: %s", record.ID[:8], record.Error)
+			if s.eventBus != nil {
+				s.eventBus.Publish(state.Event{
+					Type:      state.EventDownloadFailed,
+					JobID:     record.ID,
+					Payload:   record.Error,
+					Timestamp: time.Now(),
+				})
+			}
+			return errors.New(record.Error)
+		}
+		log.Printf("[Daemon] Download [%s] checksum verified successfully (%s)", record.ID[:8], algo)
+	}
+
 	record.Status = "completed"
 	record.DownloadedBytes = record.TotalBytes
 	record.SpeedBps = 0
 	record.ETASeconds = 0
 
-	// Classify completed file into organized directory
-	cls := classifier.NewClassifier()
-	if cat, catErr := cls.ClassifyFile(finalPath); catErr == nil {
-		record.Category = string(cat)
-	}
+	// Classify completed file into organized directory if auto-classification enabled
+	if record.autoClassify {
+		cls := classifier.NewClassifier()
+		if cat, catErr := cls.ClassifyFile(finalPath); catErr == nil {
+			record.Category = string(cat)
+		}
 
-	router := classifier.NewRouter(targetDir)
-	if classifiedPath, routeErr := router.Route(finalPath); routeErr == nil {
-		record.TargetPath = classifiedPath
+		router := classifier.NewRouter(targetDir)
+		if classifiedPath, routeErr := router.Route(finalPath); routeErr == nil {
+			record.TargetPath = classifiedPath
+		}
+	} else {
+		record.TargetPath = finalPath
 	}
 
 	s.persistJob(record)

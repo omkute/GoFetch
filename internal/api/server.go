@@ -185,6 +185,9 @@ func (s *Server) loadPersistedTasks() {
 			maxChunks:       t.MaxChunks,
 			destDir:         t.DestDir,
 			rateLimitStr:    t.RateLimit,
+			checksum:        t.Checksum,
+			checksumAlgo:    t.ChecksumAlgo,
+			autoClassify:    t.AutoClassify,
 			Error:           errMsg,
 		}
 	}

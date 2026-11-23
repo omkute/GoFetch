@@ -8,9 +8,10 @@ type CreateDownloadRequest struct {
 	DestinationDir string `json:"destination_dir"`
 	Priority       string `json:"priority"`
 	MaxChunks      int    `json:"max_chunks"`
-	Checksum       string `json:"checksum"`
-	ChecksumAlgo   string `json:"checksum_algo"`
-	AutoClassify   bool   `json:"auto_classify"`
+	Checksum       string `json:"checksum,omitempty"`
+	ChecksumAlgo   string `json:"checksum_algo,omitempty"`
+	AutoClassify   *bool  `json:"auto_classify,omitempty"`
+	NoOrganize     bool   `json:"no_organize,omitempty"`
 	RateLimit      string `json:"rate_limit,omitempty"`
 }
 

@@ -15,12 +15,15 @@ import (
 
 func newAddCmd() *cobra.Command {
 	var (
-		priority   string
-		chunks     int
-		destDir    string
-		daemonAddr string
-		rateLimit  string
-		inputFile  string
+		priority     string
+		chunks       int
+		destDir      string
+		daemonAddr   string
+		rateLimit    string
+		inputFile    string
+		checksum     string
+		checksumAlgo string
+		noOrganize   bool
 	)
 
 	cmd := &cobra.Command{
@@ -61,6 +64,9 @@ func newAddCmd() *cobra.Command {
 					Priority:       priority,
 					MaxChunks:      chunks,
 					RateLimit:      rateLimit,
+					Checksum:       checksum,
+					ChecksumAlgo:   checksumAlgo,
+					NoOrganize:     noOrganize,
 				}
 
 				body, err := json.Marshal(payload)
@@ -96,6 +102,7 @@ func newAddCmd() *cobra.Command {
 				Priority:       priority,
 				MaxChunks:      chunks,
 				RateLimit:      rateLimit,
+				NoOrganize:     noOrganize,
 			}
 
 			body, err := json.Marshal(batchPayload)
@@ -129,6 +136,9 @@ func newAddCmd() *cobra.Command {
 	cmd.Flags().IntVarP(&chunks, "chunks", "c", 4, "Number of concurrent chunk download workers")
 	cmd.Flags().StringVarP(&destDir, "dir", "d", ".", "Target download directory")
 	cmd.Flags().StringVarP(&rateLimit, "rate-limit", "l", "", "Bandwidth limit (e.g. 500KB, 2MB, 10M)")
+	cmd.Flags().StringVar(&checksum, "checksum", "", "Expected file hash (e.g. SHA-256 or MD5 hex digest)")
+	cmd.Flags().StringVar(&checksumAlgo, "checksum-algo", "sha256", "Checksum algorithm (sha256 or md5)")
+	cmd.Flags().BoolVar(&noOrganize, "no-organize", false, "Disable automatic category directory sorting")
 	cmd.Flags().StringVarP(&inputFile, "input-file", "f", "", "Path to file containing download URLs (one per line)")
 	cmd.Flags().StringVar(&daemonAddr, "daemon-addr", api.DefaultAddr, "Address of local daemon")
 

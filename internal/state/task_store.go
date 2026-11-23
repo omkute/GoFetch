@@ -30,6 +30,9 @@ type PersistedTask struct {
 	DestDir         string    `json:"dest_dir"`
 	MaxChunks       int       `json:"max_chunks"`
 	RateLimit       string    `json:"rate_limit,omitempty"`
+	Checksum        string    `json:"checksum,omitempty"`
+	ChecksumAlgo    string    `json:"checksum_algo,omitempty"`
+	AutoClassify    bool      `json:"auto_classify"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }

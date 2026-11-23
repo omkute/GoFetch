@@ -220,3 +220,83 @@ func TestPauseAndResumeCommand_Execute(t *testing.T) {
 	}
 }
 
+func TestCancelCommand_Execute(t *testing.T) {
+	origTransport := http.DefaultTransport
+	defer func() { http.DefaultTransport = origTransport }()
+
+	var lastURL string
+	var lastMethod string
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		lastURL = req.URL.String()
+		lastMethod = req.Method
+		respBody, _ := json.Marshal(api.ActionResponse{
+			ID:     "task-99",
+			Status: "deleted",
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(respBody)),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	cmd := newCancelCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"task-99", "--purge"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cancel command failed: %v", err)
+	}
+
+	if lastMethod != http.MethodDelete {
+		t.Errorf("expected DELETE method, got %s", lastMethod)
+	}
+	if !strings.Contains(lastURL, "delete_files=true") {
+		t.Errorf("expected delete_files=true in URL, got %s", lastURL)
+	}
+	if !strings.Contains(buf.String(), "Deleted download [task-99] and purged local files") {
+		t.Errorf("unexpected cancel output: %s", buf.String())
+	}
+}
+
+func TestStatsCommand_Execute(t *testing.T) {
+	origTransport := http.DefaultTransport
+	defer func() { http.DefaultTransport = origTransport }()
+
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		respBody, _ := json.Marshal(api.SystemStatsResponse{
+			ActiveDownloads:      3,
+			QueuedDownloads:      2,
+			CompletedDownloads:   10,
+			TotalSpeedBps:        15 * 1024 * 1024,
+			MemoryAllocatedBytes: 32 * 1024 * 1024,
+			UptimeSeconds:        3600,
+			GlobalRateLimitBps:   20 * 1024 * 1024,
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(respBody)),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	cmd := newStatsCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("stats command failed: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Active Downloads:    3") ||
+		!strings.Contains(out, "Aggregate Throughput: 15.00 MB/s") ||
+		!strings.Contains(out, "Global Rate Limit:   20.00 MB/s") {
+		t.Errorf("unexpected stats output:\n%s", out)
+	}
+}
+

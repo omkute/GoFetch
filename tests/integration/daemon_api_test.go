@@ -2,13 +2,24 @@ package integration_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/omkute/gofetch/internal/api"
 )
+
+type roundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestIntegration_DaemonRESTAPILifecycle(t *testing.T) {
 	server := api.NewServer("127.0.0.1:12701")
@@ -109,5 +120,94 @@ func TestIntegration_DaemonRESTAPILifecycle(t *testing.T) {
 
 	if checkW.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 Not Found after delete, got %d", checkW.Code)
+	}
+}
+
+func TestIntegration_DaemonChecksumVerification(t *testing.T) {
+	tempDir := t.TempDir()
+	server := api.NewServer("127.0.0.1:0")
+	router := server.Router()
+
+	content := []byte("Daemon checksum validation content stream!")
+	server.SetClient(&http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			h := make(http.Header)
+			h.Set("Accept-Ranges", "bytes")
+			h.Set("Content-Length", fmt.Sprintf("%d", len(content)))
+			if req.Method == http.MethodHead {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     h,
+					Body:       io.NopCloser(bytes.NewReader(nil)),
+				}, nil
+			}
+			rangeHeader := req.Header.Get("Range")
+			if rangeHeader != "" {
+				var start, end int64
+				_, err := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
+				if err == nil && start >= 0 && end < int64(len(content)) && start <= end {
+					slice := content[start : end+1]
+					h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(content)))
+					h.Set("Content-Length", fmt.Sprintf("%d", len(slice)))
+					return &http.Response{
+						StatusCode: http.StatusPartialContent,
+						Header:     h,
+						Body:       io.NopCloser(bytes.NewReader(slice)),
+					}, nil
+				}
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     h,
+				Body:       io.NopCloser(bytes.NewReader(content)),
+			}, nil
+		}),
+	})
+	server.Scheduler().Start(context.Background())
+	defer server.Scheduler().Stop()
+
+	// Enqueue with intentionally incorrect checksum
+	reqPayload := api.CreateDownloadRequest{
+		URL:            "http://mock.internal/data.bin",
+		DestinationDir: tempDir,
+		Checksum:       "wronghash000000000000000000000000000000000000000000000000000000",
+		ChecksumAlgo:   "sha256",
+		NoOrganize:     true,
+	}
+	body, _ := json.Marshal(reqPayload)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/downloads", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp api.DownloadResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed unmarshaling response: %v", err)
+	}
+
+	// Wait briefly for worker to probe, download, and fail checksum verification
+	var detail api.DownloadDetailResponse
+	for i := 0; i < 20; i++ {
+		time.Sleep(50 * time.Millisecond)
+		detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/downloads/"+resp.ID, nil)
+		detailW := httptest.NewRecorder()
+		router.ServeHTTP(detailW, detailReq)
+		if detailW.Code == http.StatusOK {
+			_ = json.Unmarshal(detailW.Body.Bytes(), &detail)
+			if detail.Status == "failed" {
+				break
+			}
+		}
+	}
+
+	if detail.Status != "failed" {
+		t.Fatalf("expected download status 'failed' due to checksum mismatch, got %s", detail.Status)
+	}
+	if !strings.Contains(detail.Error, "checksum mismatch") {
+		t.Errorf("expected checksum mismatch error, got: %s", detail.Error)
 	}
 }

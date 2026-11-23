@@ -247,3 +247,17 @@ This backlog organizes the implementation of **GoFetch** v1 into 11 dependency-o
 * **Dependencies**: `T-016`
 * **Scope**: `gofetch gui` command, `--input-file` URL batch import, comprehensive end-to-end integration test suite.
 
+---
+
+### Milestone 5: GoFetch Polish & Full Feature Parity
+
+#### `T-018`: Standalone CLI Engine, Cancel/Stats Commands & Checksum Validation
+* **Milestone**: 5 (GoFetch Polish & Full Feature Parity)
+* **Dependencies**: `T-017`
+* **Scope**:
+  * Standalone CLI direct download engine (`gofetch <url>`) wiring Bubbletea interactive TUI, headless printer, and JSON modes.
+  * Daemon `cancel` / `delete` command (`cmd/gofetch/cancel.go`) with file purge option.
+  * Daemon `stats` command (`cmd/gofetch/stats.go`) displaying active tasks, throughput, memory, and uptime.
+  * Checksum verification (`--checksum`, `--checksum-algo`) and classification bypass (`--no-organize`) integration across CLI and daemon.
+  * Comprehensive developer and user documentation in `README.md`.
+
