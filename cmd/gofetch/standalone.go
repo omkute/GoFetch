@@ -9,14 +9,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/omkute/gofetch/internal/classifier"
 	"github.com/omkute/gofetch/internal/engine"
-	"github.com/omkute/gofetch/internal/storage"
 	"github.com/omkute/gofetch/internal/ui"
 )
 
@@ -88,10 +86,12 @@ func runStandaloneDownload(ctx context.Context, opts standaloneOptions) error {
 	}
 
 	dlOpts := engine.DownloadOptions{
-		DestDir:     destDir,
-		MaxWorkers:  chunks,
-		Sequential:  opts.Sequential,
-		RateLimiter: limiter,
+		DestDir:      destDir,
+		MaxWorkers:   chunks,
+		Sequential:   opts.Sequential,
+		RateLimiter:  limiter,
+		Checksum:     opts.Checksum,
+		ChecksumAlgo: opts.ChecksumAlgo,
 		ProgressFn: func(chunkIndex int, bytesRead int) {
 			tracker.AddChunkBytes(chunkIndex, int64(bytesRead))
 		},
@@ -145,13 +145,13 @@ func runStandaloneDownload(ctx context.Context, opts standaloneOptions) error {
 				select {
 				case <-ticker.C:
 					progressObj := map[string]interface{}{
-						"file":            probe.Filename,
-						"total_bytes":     tracker.TotalBytes(),
-						"downloaded":      tracker.TotalDownloaded(),
-						"progress_pct":    tracker.Percentage(),
-						"speed_bps":       int64(tracker.SpeedBytesPerSec()),
-						"eta_seconds":     int64(tracker.ETA().Seconds()),
-						"status":          "downloading",
+						"file":         probe.Filename,
+						"total_bytes":  tracker.TotalBytes(),
+						"downloaded":   tracker.TotalDownloaded(),
+						"progress_pct": tracker.Percentage(),
+						"speed_bps":    int64(tracker.SpeedBytesPerSec()),
+						"eta_seconds":  int64(tracker.ETA().Seconds()),
+						"status":       "downloading",
 					}
 					data, _ := json.Marshal(progressObj)
 					_, _ = fmt.Fprintln(out, string(data))
@@ -209,25 +209,10 @@ func runStandaloneDownload(ctx context.Context, opts standaloneOptions) error {
 		return fmt.Errorf("download error: %w", downloadErr)
 	}
 
-	// 2. Checksum Verification
-	if opts.Checksum != "" {
-		algo := storage.AlgorithmSHA256
-		if strings.EqualFold(opts.ChecksumAlgo, "md5") {
-			algo = storage.AlgorithmMD5
-		}
-		if !opts.Quiet && !opts.JSON {
-			_, _ = fmt.Fprintf(out, "Verifying checksum (%s)...\n", algo)
-		}
-		valid, verifyErr := storage.VerifyFile(finalDownloadedPath, opts.Checksum, algo)
-		if verifyErr != nil || !valid {
-			if verifyErr != nil {
-				return fmt.Errorf("checksum verification failed: %w", verifyErr)
-			}
-			return fmt.Errorf("checksum mismatch: file digest did not match expected %s", opts.Checksum)
-		}
-		if !opts.Quiet && !opts.JSON {
-			_, _ = fmt.Fprintln(out, "Checksum verified successfully.")
-		}
+	// 2. Checksum was verified by the coordinator on the staged .part file
+	// before the atomic commit; reaching here means it matched.
+	if opts.Checksum != "" && !opts.Quiet && !opts.JSON {
+		_, _ = fmt.Fprintln(out, "Checksum verified successfully.")
 	}
 
 	// 3. Media Classification & Organization

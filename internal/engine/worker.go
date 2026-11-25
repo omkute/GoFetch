@@ -191,7 +191,10 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 		}
 	}
 
-	// 5. Flush dirty page buffers and commit staging .part file
+	// 5. Verify integrity on the staged file, then flush and commit it.
+	if err := verifyChecksumBeforeCommit(writer, opts); err != nil {
+		return "", err
+	}
 	if err := writer.Commit(); err != nil {
 		return "", fmt.Errorf("failed to commit download: %w", err)
 	}

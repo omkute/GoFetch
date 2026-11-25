@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -20,7 +19,6 @@ import (
 	"github.com/omkute/gofetch/internal/engine"
 	"github.com/omkute/gofetch/internal/queue"
 	"github.com/omkute/gofetch/internal/state"
-	"github.com/omkute/gofetch/internal/storage"
 	"github.com/omkute/gofetch/internal/ui"
 )
 
@@ -55,15 +53,10 @@ func generateID() string {
 	return hex.EncodeToString(b)
 }
 
-func (s *Server) persistJob(job *jobRecord) {
-	s.mu.RLock()
-	ts := s.taskStore
-	s.mu.RUnlock()
-	if ts == nil || job == nil {
-		return
-	}
-
-	_ = ts.SaveTask(&state.PersistedTask{
+// jobSnapshot copies the persistable fields of a job. Callers must hold jobsMu
+// when snapshotting a live job record.
+func jobSnapshot(job *jobRecord) state.PersistedTask {
+	return state.PersistedTask{
 		ID:              job.ID,
 		URL:             job.URL,
 		FileName:        job.FileName,
@@ -84,7 +77,36 @@ func (s *Server) persistJob(job *jobRecord) {
 		AutoClassify:    job.autoClassify,
 		CreatedAt:       job.CreatedAt,
 		UpdatedAt:       time.Now().UTC(),
-	})
+	}
+}
+
+// persistJob performs a synchronous save for lifecycle transitions only. It is
+// never called from the chunk transfer hot path.
+func (s *Server) persistJob(job *jobRecord) {
+	if job == nil {
+		return
+	}
+	s.mu.RLock()
+	ts := s.taskStore
+	s.mu.RUnlock()
+	if ts == nil {
+		return
+	}
+
+	snap := jobSnapshot(job)
+	_ = ts.SaveTask(&snap)
+}
+
+// queuePersistSnapshot hands a progress snapshot to the background consumer
+// using a non-blocking send: no database call happens in the worker goroutine.
+func (s *Server) queuePersistSnapshot(job *jobRecord) {
+	if job == nil {
+		return
+	}
+	select {
+	case s.persistCh <- jobSnapshot(job):
+	default: // consumer behind: drop; the next lifecycle event will persist state
+	}
 }
 
 func (s *Server) enqueueDownload(req CreateDownloadRequest) DownloadResponse {
@@ -265,10 +287,12 @@ func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
 	}
 
 	opts := engine.DownloadOptions{
-		DestDir:     targetDir,
-		JobID:       record.ID,
-		MaxWorkers:  record.maxChunks,
-		RateLimiter: effectiveLimiter,
+		DestDir:      targetDir,
+		JobID:        record.ID,
+		MaxWorkers:   record.maxChunks,
+		RateLimiter:  effectiveLimiter,
+		Checksum:     record.checksum,
+		ChecksumAlgo: record.checksumAlgo,
 		ProgressFn: func(chunkIndex int, bytesRead int) {
 			s.jobsMu.Lock()
 			record.DownloadedBytes += int64(bytesRead)
@@ -287,7 +311,7 @@ func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
 			}
 
 			if now.Sub(lastPersist) >= 2*time.Second {
-				s.persistJob(record)
+				s.queuePersistSnapshot(record)
 				lastPersist = now
 			}
 			s.jobsMu.Unlock()
@@ -329,34 +353,9 @@ func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
 		return err
 	}
 
-	// Verify checksum if provided
-	if record.checksum != "" {
-		algo := storage.AlgorithmSHA256
-		if strings.EqualFold(record.checksumAlgo, "md5") {
-			algo = storage.AlgorithmMD5
-		}
-		valid, checkErr := storage.VerifyFile(finalPath, record.checksum, algo)
-		if checkErr != nil || !valid {
-			record.Status = "failed"
-			if checkErr != nil {
-				record.Error = fmt.Sprintf("checksum verification error: %v", checkErr)
-			} else {
-				record.Error = fmt.Sprintf("checksum mismatch: expected %s (%s)", record.checksum, algo)
-			}
-			s.persistJob(record)
-			log.Printf("[Daemon] Download [%s] checksum failure: %s", record.ID[:8], record.Error)
-			if s.eventBus != nil {
-				s.eventBus.Publish(state.Event{
-					Type:      state.EventDownloadFailed,
-					JobID:     record.ID,
-					Payload:   record.Error,
-					Timestamp: time.Now(),
-				})
-			}
-			return errors.New(record.Error)
-		}
-		log.Printf("[Daemon] Download [%s] checksum verified successfully (%s)", record.ID[:8], algo)
-	}
+	// Checksum verification is performed by the coordinator on the staged
+	// .part file *before* it is committed, so a mismatch cannot reach this
+	// point and never leaves a bad file at the final path.
 
 	record.Status = "completed"
 	record.DownloadedBytes = record.TotalBytes
@@ -567,4 +566,3 @@ func (s *Server) handleDeleteDownload(w http.ResponseWriter, r *http.Request) {
 		Status: "deleted",
 	})
 }
-

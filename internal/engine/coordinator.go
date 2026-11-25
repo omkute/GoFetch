@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strings"
 
 	"github.com/omkute/gofetch/internal/storage"
 )
@@ -126,6 +127,11 @@ func (c *Coordinator) DownloadSingleStreamWithOptions(ctx context.Context, probe
 		}
 	}
 
+	// Verify integrity on the staged file before it is ever given its final name.
+	if err := verifyChecksumBeforeCommit(writer, opts); err != nil {
+		return "", err
+	}
+
 	// Commit staged file atomically to final destination
 	if err := writer.Commit(); err != nil {
 		return "", fmt.Errorf("failed to commit downloaded file: %w", err)
@@ -133,4 +139,32 @@ func (c *Coordinator) DownloadSingleStreamWithOptions(ctx context.Context, probe
 
 	committed = true
 	return finalPath, nil
+}
+
+// verifyChecksumBeforeCommit hashes the staged .gofetch.part file and compares
+// it with the expected digest before the file is atomically promoted to its
+// final name. On mismatch the part file is left intact and the final file is
+// never created or replaced. It is a no-op when no checksum was requested.
+func verifyChecksumBeforeCommit(writer *storage.FileWriter, opts DownloadOptions) error {
+	if opts.Checksum == "" {
+		return nil
+	}
+
+	algo := storage.AlgorithmSHA256
+	if strings.EqualFold(strings.TrimSpace(opts.ChecksumAlgo), "md5") {
+		algo = storage.AlgorithmMD5
+	}
+
+	if err := writer.Sync(); err != nil {
+		return fmt.Errorf("failed to sync part file before checksum verification: %w", err)
+	}
+
+	valid, err := storage.VerifyFile(writer.PartPath(), opts.Checksum, algo)
+	if err != nil {
+		return fmt.Errorf("checksum verification failed: %w", err)
+	}
+	if !valid {
+		return fmt.Errorf("checksum mismatch: expected %s (%s)", strings.TrimSpace(opts.Checksum), algo)
+	}
+	return nil
 }

@@ -8,11 +8,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/omkute/gofetch/internal/api"
+	"github.com/omkute/gofetch/internal/storage"
 )
 
 type roundTripFunc func(req *http.Request) (*http.Response, error)
@@ -209,5 +212,16 @@ func TestIntegration_DaemonChecksumVerification(t *testing.T) {
 	}
 	if !strings.Contains(detail.Error, "checksum mismatch") {
 		t.Errorf("expected checksum mismatch error, got: %s", detail.Error)
+	}
+
+	// A checksum mismatch must never produce a final file; the staged part
+	// file must remain on disk for inspection/resumption.
+	finalPath := filepath.Join(tempDir, "data.bin")
+	if _, statErr := os.Stat(finalPath); !os.IsNotExist(statErr) {
+		t.Fatalf("checksum mismatch must not create final file %q, stat error: %v", finalPath, statErr)
+	}
+	partPath := finalPath + storage.PartFileExtension
+	if _, statErr := os.Stat(partPath); statErr != nil {
+		t.Fatalf("checksum mismatch must preserve staged part file %q: %v", partPath, statErr)
 	}
 }

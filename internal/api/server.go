@@ -16,6 +16,9 @@ import (
 // DefaultAddr is the standard loopback address and port for the GoFetch daemon.
 const DefaultAddr = "127.0.0.1:12701"
 
+// persistBufferSize bounds the asynchronous progress-persistence handoff.
+const persistBufferSize = 256
+
 // Server represents the GoFetch loopback HTTP daemon engine.
 type Server struct {
 	addr       string
@@ -34,6 +37,13 @@ type Server struct {
 	eventBus          *state.EventBus
 	globalRateLimiter *engine.RateLimiter
 	startTime         time.Time
+
+	// Progress snapshots are handed off through a buffered channel so that no
+	// database call is made from the chunk transfer goroutines.
+	persistCh     chan state.PersistedTask
+	persistCancel context.CancelFunc
+	persistDone   chan struct{}
+	persistOnce   sync.Once
 }
 
 func defaultStreamingClient() *http.Client {
@@ -71,6 +81,8 @@ func NewServer(addr string) *Server {
 		eventBus:          state.NewEventBus(1024),
 		globalRateLimiter: engine.NewRateLimiter(0),
 		startTime:         time.Now().UTC(),
+		persistCh:         make(chan state.PersistedTask, persistBufferSize),
+		persistDone:       make(chan struct{}),
 	}
 }
 
@@ -193,6 +205,41 @@ func (s *Server) loadPersistedTasks() {
 	}
 }
 
+// savePersistedTask performs the actual DB write from the background consumer.
+func (s *Server) savePersistedTask(snap *state.PersistedTask) {
+	if snap == nil {
+		return
+	}
+	s.mu.RLock()
+	ts := s.taskStore
+	s.mu.RUnlock()
+	if ts != nil {
+		_ = ts.SaveTask(snap)
+	}
+}
+
+// runPersistConsumer drains progress snapshots off the hot path and persists
+// them in a dedicated goroutine. Shutdown cancels it and waits for a final drain.
+func (s *Server) runPersistConsumer(ctx context.Context) {
+	defer s.persistOnce.Do(func() { close(s.persistDone) })
+
+	for {
+		select {
+		case snap := <-s.persistCh:
+			s.savePersistedTask(&snap)
+		case <-ctx.Done():
+			for {
+				select {
+				case snap := <-s.persistCh:
+					s.savePersistedTask(&snap)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
 // Router returns the configured HTTP handler with all registered API routes.
 func (s *Server) Router() http.Handler {
 	return s.setupRoutes()
@@ -217,6 +264,12 @@ func (s *Server) Ready() <-chan struct{} {
 func (s *Server) Start() error {
 	s.scheduler.Start(context.Background())
 	s.loadPersistedTasks()
+
+	persistCtx, cancelPersist := context.WithCancel(context.Background())
+	s.mu.Lock()
+	s.persistCancel = cancelPersist
+	s.mu.Unlock()
+	go s.runPersistConsumer(persistCtx)
 
 	s.mu.Lock()
 	ln, err := net.Listen("tcp", s.addr)
@@ -243,6 +296,15 @@ func (s *Server) Start() error {
 // Shutdown gracefully stops the HTTP server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.scheduler.Stop()
+
+	// Stop and drain the async persistence consumer before closing its store.
+	s.mu.RLock()
+	cancelPersist := s.persistCancel
+	s.mu.RUnlock()
+	if cancelPersist != nil {
+		cancelPersist()
+		<-s.persistDone
+	}
 
 	s.jobsMu.Lock()
 	for _, job := range s.jobs {
