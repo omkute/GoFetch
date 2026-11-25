@@ -138,6 +138,19 @@ func (s *Server) Scheduler() *queue.Scheduler {
 	return s.scheduler
 }
 
+// SetConcurrency configures the global download scheduler. When fifo is true
+// tasks are dispatched in strict submission order (and maxConcurrent == 1
+// guarantees exactly one active download). Call before Start.
+func (s *Server) SetConcurrency(maxConcurrent int, fifo bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if fifo {
+		s.scheduler = queue.NewFIFOScheduler(maxConcurrent)
+	} else {
+		s.scheduler = queue.NewScheduler(maxConcurrent)
+	}
+}
+
 // EventBus returns the active event bus.
 func (s *Server) EventBus() *state.EventBus {
 	s.mu.RLock()

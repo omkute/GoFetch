@@ -46,8 +46,9 @@
 * **Checksum Verification**: Validates file integrity post-download via optional `--checksum` flag (supporting SHA-256 and MD5).
 
 ### Queue & Priority Management
-* **Concurrency Limiting**: Supports global concurrency controls (`--max-concurrent` / `-j`, default: 3).
-* **Sequential Mode**: Supports strict sequential execution (`--sequential` or `-j 1`) processing items strictly in queue order.
+* **Concurrency Limiting**: Supports global concurrency controls (`--max-concurrent` / `-j`, default: 3) via the queue scheduler and `concurrency.max_concurrent_downloads` config setting.
+* **Sequential Mode**: `--sequential` or `-j 1` means strict sequential execution: exactly one download is active and items are processed in submission (FIFO) order, regardless of priority.
+* **Chunk-Order Mode**: `--chunk-sequential` fetches the chunks of an individual file head-to-tail; it is independent of task-level sequential mode.
 * **Priority Queue**: Supports assigning priority levels (`--priority high|normal|low`); pending high-priority items preempt lower-priority items in the queue.
 
 ### Media Classification & File Management

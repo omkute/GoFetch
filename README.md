@@ -15,7 +15,7 @@ GoFetch is a cross-platform download accelerator designed for extreme network re
 - **🤖 Headless & Scriptable Modes**: Quiet (`-q`) and machine-readable JSON (`--json`) modes tailored for CI/CD pipelines, shell scripts, and background tools.
 - **📁 Automated Media Classification**: Automatically inspects MIME magic bytes (`http.DetectContentType`) and file extensions to route finished files into organized subdirectories (`Videos/`, `Documents/`, `Audio/`, `Archives/`, `Software/`, `Others/`).
 - **🎛️ Bandwidth Rate Limiter**: High-precision token-bucket rate limiting configurable globally or per-download (e.g. `--rate-limit 5MB`, `10M`).
-- **🚦 Priority Queue & Dynamic Scheduling**: Dispatches high-priority tasks first, with support for strict sequential execution (`--sequential` or `-j 1`).
+- **🚦 Priority Queue & Dynamic Scheduling**: Global concurrency via `--max-concurrent` / `-j` (default 3). `--sequential` or `-j 1` runs downloads one at a time in strict submission (FIFO) order; `--chunk-sequential` separately fetches a single file's chunks head-to-tail.
 - **🌐 Embedded Modern Desktop / Web GUI**: Zero-dependency single-page application embedded directly into the binary via `embed.FS`, featuring a real-time 60-second Canvas bandwidth graph, live queue controls, category filters, and SSE streaming.
 - **🔒 Checksum Integrity Verification**: Post-download streaming cryptographic verification supporting both SHA-256 and MD5 digests.
 - **🧩 Zero Database on Hot Path**: Memory-mapped sparse file preallocation (`os.Truncate`) and direct disk I/O; telemetry is decoupled onto asynchronous buffered channels.
@@ -179,13 +179,16 @@ gofetch stats
 GoFetch automatically discovers configuration files from `~/.gofetch/config.yaml`, the current directory, or via the `--config` flag.
 
 ```yaml
+concurrency:
+  max_concurrent_downloads: 3 # global limit; flag -j/--max-concurrent overrides
+  chunks_per_download: 4
+
 general:
   download_dir: "~/Downloads"
   auto_classify: true
   default_priority: "normal"
 
 network:
-  max_concurrent_tasks: 3
   default_chunks_per_task: 4
   global_rate_limit_bps: 20971520 # 20 MB/s
   connect_timeout_seconds: 30

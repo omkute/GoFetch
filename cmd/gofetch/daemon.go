@@ -18,9 +18,11 @@ import (
 
 func newDaemonCmd() *cobra.Command {
 	var (
-		daemonAddr string
-		rateLimit  string
-		configFile string
+		daemonAddr    string
+		rateLimit     string
+		configFile    string
+		maxConcurrent int
+		sequential    bool
 	)
 
 	cmd := &cobra.Command{
@@ -39,6 +41,14 @@ func newDaemonCmd() *cobra.Command {
 			}
 
 			server := api.NewServer(addr)
+
+			limit, fifo := resolveDaemonConcurrency(
+				maxConcurrent,
+				cmd.Flags().Changed("max-concurrent"),
+				cfg.Concurrency.MaxConcurrentDownloads,
+				sequential,
+			)
+			server.SetConcurrency(limit, fifo)
 
 			taskDB := cfg.Daemon.TaskDBPath
 			if taskDB != "" {
@@ -89,5 +99,23 @@ func newDaemonCmd() *cobra.Command {
 	cmd.Flags().StringVar(&daemonAddr, "addr", api.DefaultAddr, "Address and port for loopback daemon")
 	cmd.Flags().StringVarP(&rateLimit, "rate-limit", "l", "", "Global bandwidth rate limit (e.g. 5MB, 10M)")
 	cmd.Flags().StringVar(&configFile, "config", "", "Path to custom configuration file (default: ~/.gofetch/config.yaml)")
+	cmd.Flags().IntVarP(&maxConcurrent, "max-concurrent", "j", 3, "Maximum concurrent downloads (1 = strict queue order)")
+	cmd.Flags().BoolVar(&sequential, "sequential", false, "Execute downloads strictly in queue order (implies -j 1)")
 	return cmd
+}
+
+// resolveDaemonConcurrency applies flag > config > default precedence and
+// derives FIFO mode from --sequential or a limit of one.
+func resolveDaemonConcurrency(flagValue int, flagChanged bool, configValue int, sequential bool) (int, bool) {
+	limit := flagValue
+	if !flagChanged && configValue > 0 {
+		limit = configValue
+	}
+	if limit <= 0 {
+		limit = 3
+	}
+	if sequential {
+		limit = 1
+	}
+	return limit, sequential || limit == 1
 }

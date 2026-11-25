@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,19 +24,21 @@ import (
 )
 
 type standaloneOptions struct {
-	URL          string
-	DestDir      string
-	Chunks       int
-	RateLimit    string
-	Sequential   bool
-	Checksum     string
-	ChecksumAlgo string
-	NoOrganize   bool
-	Quiet        bool
-	Headless     bool
-	JSON         bool
-	Out          io.Writer
-	Client       *http.Client
+	URL             string
+	DestDir         string
+	Chunks          int
+	MaxConcurrent   int
+	RateLimit       string
+	Sequential      bool
+	ChunkSequential bool
+	Checksum        string
+	ChecksumAlgo    string
+	NoOrganize      bool
+	Quiet           bool
+	Headless        bool
+	JSON            bool
+	Out             io.Writer
+	Client          *http.Client
 }
 
 func isTerminal(f *os.File) bool {
@@ -96,7 +99,7 @@ func runStandaloneDownload(ctx context.Context, opts standaloneOptions) error {
 		DestDir:      destDir,
 		JobID:        jobID,
 		MaxWorkers:   chunks,
-		Sequential:   opts.Sequential,
+		Sequential:   opts.ChunkSequential,
 		RateLimiter:  limiter,
 		Checksum:     opts.Checksum,
 		ChecksumAlgo: opts.ChecksumAlgo,
@@ -254,24 +257,67 @@ func runStandalone(opts standaloneOptions, urls []string) error {
 		cancel()
 	}()
 
-	for i, u := range urls {
+	limit := opts.MaxConcurrent
+	if limit <= 0 {
+		limit = 3
+	}
+	if opts.Sequential {
+		limit = 1
+	}
+
+	// Strict queue order: one download at a time, in submission order.
+	if limit == 1 {
+		for i, u := range urls {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			if len(urls) > 1 && !opts.Quiet && !opts.JSON {
+				_, _ = fmt.Fprintf(opts.Out, "\n[%d/%d] Fetching %s\n", i+1, len(urls), u)
+			}
+			itemOpts := opts
+			itemOpts.URL = u
+			if err := runStandaloneDownload(ctx, itemOpts); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// Bounded concurrency: acquire slots in submission order so dispatch is
+	// FIFO even when individual downloads finish out of order.
+	sem := make(chan struct{}, limit)
+	errCh := make(chan error, len(urls))
+	var wg sync.WaitGroup
+
+	for _, u := range urls {
 		select {
 		case <-ctx.Done():
+			wg.Wait()
 			return ctx.Err()
-		default:
-		}
-
-		if len(urls) > 1 && !opts.Quiet && !opts.JSON {
-			_, _ = fmt.Fprintf(opts.Out, "\n[%d/%d] Fetching %s\n", i+1, len(urls), u)
+		case sem <- struct{}{}:
 		}
 
 		itemOpts := opts
 		itemOpts.URL = u
-		if err := runStandaloneDownload(ctx, itemOpts); err != nil {
+		wg.Add(1)
+		go func(item standaloneOptions) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := runStandaloneDownload(ctx, item); err != nil {
+				errCh <- err
+			}
+		}(itemOpts)
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 

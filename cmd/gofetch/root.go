@@ -11,17 +11,19 @@ import (
 
 func newRootCmd() *cobra.Command {
 	var (
-		chunks       int
-		destDir      string
-		rateLimit    string
-		sequential   bool
-		checksum     string
-		checksumAlgo string
-		noOrganize   bool
-		quiet        bool
-		headless     bool
-		jsonOutput   bool
-		inputFile    string
+		chunks          int
+		maxConcurrent   int
+		destDir         string
+		rateLimit       string
+		sequential      bool
+		chunkSequential bool
+		checksum        string
+		checksumAlgo    string
+		noOrganize      bool
+		quiet           bool
+		headless        bool
+		jsonOutput      bool
+		inputFile       string
 	)
 
 	cmd := &cobra.Command{
@@ -56,18 +58,20 @@ built for extreme reliability, high throughput, and seamless pause/resume.`,
 			}
 
 			opts := standaloneOptions{
-				DestDir:      destDir,
-				Chunks:       chunks,
-				RateLimit:    rateLimit,
-				Sequential:   sequential,
-				Checksum:     checksum,
-				ChecksumAlgo: checksumAlgo,
-				NoOrganize:   noOrganize,
-				Quiet:        quiet,
-				Headless:     headless,
-				JSON:         jsonOutput,
-				Out:          cmd.OutOrStdout(),
-				Client:       &http.Client{Transport: http.DefaultTransport},
+				DestDir:         destDir,
+				Chunks:          chunks,
+				MaxConcurrent:   maxConcurrent,
+				RateLimit:       rateLimit,
+				Sequential:      sequential,
+				ChunkSequential: chunkSequential,
+				Checksum:        checksum,
+				ChecksumAlgo:    checksumAlgo,
+				NoOrganize:      noOrganize,
+				Quiet:           quiet,
+				Headless:        headless,
+				JSON:            jsonOutput,
+				Out:             cmd.OutOrStdout(),
+				Client:          &http.Client{Transport: http.DefaultTransport},
 			}
 
 			return runStandalone(opts, urls)
@@ -75,9 +79,11 @@ built for extreme reliability, high throughput, and seamless pause/resume.`,
 	}
 
 	cmd.Flags().IntVarP(&chunks, "chunks", "c", 4, "Number of concurrent chunk download workers")
+	cmd.Flags().IntVarP(&maxConcurrent, "max-concurrent", "j", 3, "Maximum concurrent downloads (1 = strict queue order)")
 	cmd.Flags().StringVarP(&destDir, "dir", "d", ".", "Target download directory")
 	cmd.Flags().StringVarP(&rateLimit, "rate-limit", "l", "", "Bandwidth limit (e.g. 500KB, 2MB, 10M)")
-	cmd.Flags().BoolVar(&sequential, "sequential", false, "Strict sequential chunk execution (FIFO)")
+	cmd.Flags().BoolVar(&sequential, "sequential", false, "Execute downloads strictly in queue order (implies -j 1)")
+	cmd.Flags().BoolVar(&chunkSequential, "chunk-sequential", false, "Fetch chunks of each file in head-to-tail order")
 	cmd.Flags().StringVar(&checksum, "checksum", "", "Expected file hash (e.g. SHA-256 or MD5 hex digest)")
 	cmd.Flags().StringVar(&checksumAlgo, "checksum-algo", "sha256", "Checksum algorithm (sha256 or md5)")
 	cmd.Flags().BoolVar(&noOrganize, "no-organize", false, "Disable automatic category directory sorting")

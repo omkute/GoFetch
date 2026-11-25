@@ -11,6 +11,11 @@ type taskHeap []*Task
 func (h taskHeap) Len() int { return len(h) }
 
 func (h taskHeap) Less(i, j int) bool {
+	// In queue-order (FIFO) mode the submission sequence is authoritative and
+	// priority is deliberately ignored.
+	if h[i].fifo && h[j].fifo {
+		return h[i].seq < h[j].seq
+	}
 	// 1. Highest priority comes first (PriorityHigh > Normal > Low)
 	if h[i].Priority != h[j].Priority {
 		return h[i].Priority > h[j].Priority
@@ -44,18 +49,28 @@ func (h *taskHeap) Pop() any {
 
 // PriorityQueue provides a thread-safe priority queue wrapping container/heap.
 type PriorityQueue struct {
-	mu    sync.Mutex
-	h     taskHeap
-	items map[string]*Task
+	mu      sync.Mutex
+	h       taskHeap
+	items   map[string]*Task
+	fifo    bool
+	nextSeq uint64
 }
 
-// NewPriorityQueue creates an empty PriorityQueue.
+// NewPriorityQueue creates an empty priority-ordered queue.
 func NewPriorityQueue() *PriorityQueue {
 	pq := &PriorityQueue{
 		h:     make(taskHeap, 0),
 		items: make(map[string]*Task),
 	}
 	heap.Init(&pq.h)
+	return pq
+}
+
+// NewFIFOPQueue creates a queue that pops tasks strictly in submission order,
+// ignoring task priority.
+func NewFIFOPQueue() *PriorityQueue {
+	pq := NewPriorityQueue()
+	pq.fifo = true
 	return pq
 }
 
@@ -67,6 +82,9 @@ func (pq *PriorityQueue) Push(task *Task) {
 	pq.mu.Lock()
 	defer pq.mu.Unlock()
 
+	task.fifo = pq.fifo
+	task.seq = pq.nextSeq
+	pq.nextSeq++
 	pq.items[task.ID] = task
 	heap.Push(&pq.h, task)
 }

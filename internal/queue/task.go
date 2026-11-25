@@ -64,13 +64,15 @@ const (
 
 // Task encapsulates an actionable download unit within the scheduler.
 type Task struct {
-	ID        string                         `json:"id"`
-	URL       string                         `json:"url"`
-	Priority  Priority                       `json:"priority"`
-	Status    TaskStatus                     `json:"status"`
-	CreatedAt time.Time                      `json:"created_at"`
+	ID        string                          `json:"id"`
+	URL       string                          `json:"url"`
+	Priority  Priority                        `json:"priority"`
+	Status    TaskStatus                      `json:"status"`
+	CreatedAt time.Time                       `json:"created_at"`
 	Fn        func(ctx context.Context) error `json:"-"`
-	Err       error                          `json:"error,omitempty"`
+	Err       error                           `json:"error,omitempty"`
 
-	index int // internal index maintained by container/heap
+	index int    // internal index maintained by container/heap
+	seq   uint64 // submission sequence, used by FIFO scheduling
+	fifo  bool   // true when queued in FIFO (queue-order) mode
 }

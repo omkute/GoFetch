@@ -10,6 +10,7 @@ import (
 // Scheduler manages concurrency limits and executes tasks according to priority.
 type Scheduler struct {
 	maxConcurrent int
+	fifo          bool
 	pq            *PriorityQueue
 
 	mu            sync.Mutex
@@ -38,6 +39,26 @@ func NewScheduler(maxConcurrent int) *Scheduler {
 		notifyCh:      make(chan struct{}, 1),
 		stopCh:        make(chan struct{}),
 	}
+}
+
+// NewFIFOScheduler creates a scheduler that dispatches tasks strictly in
+// submission order, ignoring priority. With maxConcurrent == 1 this guarantees
+// exactly one active task at a time.
+func NewFIFOScheduler(maxConcurrent int) *Scheduler {
+	s := NewScheduler(maxConcurrent)
+	s.fifo = true
+	s.pq = NewFIFOPQueue()
+	return s
+}
+
+// MaxConcurrent returns the configured maximum number of simultaneous tasks.
+func (s *Scheduler) MaxConcurrent() int {
+	return s.maxConcurrent
+}
+
+// IsFIFO reports whether the scheduler dispatches in strict submission order.
+func (s *Scheduler) IsFIFO() bool {
+	return s.fifo
 }
 
 // Start launches the background scheduler dispatcher loop.

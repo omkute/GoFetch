@@ -155,14 +155,16 @@ This backlog organizes the implementation of **GoFetch** v1 into 11 dependency-o
 * **Milestone**: 2 (Organization & Scheduling)
 * **Dependencies**: `T-007`
 * **Scope**:
-  * Implement concurrency limiter via token semaphore in `internal/queue/semaphore.go`.
-  * Add support for `--max-concurrent` (`-j`, default: 3) and `--sequential` (`-j 1`) CLI flags.
-  * Guarantee strictly ordered FIFO execution when running in sequential mode.
+  * Implement global concurrency limiting via `--max-concurrent` (`-j`, default: 3) on the CLI and daemon, wired to `queue.NewScheduler` and to the `concurrency.max_concurrent_downloads` config setting (flag overrides config).
+  * `--sequential` / `-j 1` means strict task-level FIFO execution: exactly one download active at a time, items dispatched and completed in submission order regardless of priority.
+  * Preserve per-file head-to-tail chunk ordering under the distinct `--chunk-sequential` flag (wired to `DownloadOptions.Sequential`).
+  * Implement the concurrency limiter via token semaphore in `internal/queue/semaphore.go`.
 * **Deliverables**:
-  * `internal/queue/semaphore.go`, `cmd/gofetch/add.go`
-  * `internal/queue/semaphore_test.go`, `tests/integration/priority_test.go`
+  * `internal/queue/scheduler.go`, `internal/queue/priority_heap.go`, `internal/queue/semaphore.go`, `cmd/gofetch/root.go`, `cmd/gofetch/daemon.go`
+  * `internal/queue/scheduler_fifo_test.go`, `cmd/gofetch/concurrency_test.go`, `tests/integration/queue_order_test.go`
 * **Testable Outcome**:
-  * Queuing 5 distinct download URLs in `--sequential` mode verifies that exactly 1 download runs at any instant, and tasks complete strictly in submitted sequence.
+  * Queuing 5 distinct download URLs in `-j 1` / `--sequential` mode verifies that exactly 1 download runs at any instant, and tasks complete strictly in submitted sequence.
+  * `--chunk-sequential` still produces head-to-tail chunk requests and a bit-for-bit identical file.
 
 ---
 
