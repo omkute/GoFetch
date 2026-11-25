@@ -13,6 +13,7 @@
     selectedTaskId: null,
     detailBusy: false,
     lastDetailFetch: 0,
+    lastSpeedSample: 0,
   };
 
   // DOM Elements
@@ -150,9 +151,14 @@
       }
     });
 
-    // Push into speed history
-    state.speedHistory.shift();
-    state.speedHistory.push(totalSpeed);
+    // Sample speed history at most once per second, independent of how often
+    // progress frames arrive. The 60-sample history therefore spans 60 seconds.
+    const now = Date.now();
+    if (now - state.lastSpeedSample >= 1000) {
+      state.lastSpeedSample = now;
+      state.speedHistory.shift();
+      state.speedHistory.push(totalSpeed);
+    }
 
     headerSpeed.textContent = formatBytes(totalSpeed) + "/s";
     headerActive.textContent = activeCount;
@@ -175,7 +181,6 @@
     document.getElementById("cat-misc").textContent = catCounts.Miscellaneous;
 
     renderTasksTable();
-    renderChart();
     if (state.selectedTaskId) refreshDetail(false);
   }
 
@@ -550,5 +555,6 @@
     connectSSE();
     pollFallback();
     setInterval(renderChart, 1000);
+    renderChart();
   });
 })();

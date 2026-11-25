@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -113,6 +114,65 @@ func TestBatchCreateAndPauseResumeAll(t *testing.T) {
 		}
 	}
 	server.jobsMu.RUnlock()
+}
+
+func TestSSEProgressIntervalIsSub100ms(t *testing.T) {
+	if SSEProgressInterval >= 100*time.Millisecond {
+		t.Fatalf("SSEProgressInterval = %v, want sub-100ms", SSEProgressInterval)
+	}
+}
+
+func TestSSEProgressFramesWithinSubSecondWindow(t *testing.T) {
+	server := NewServer("127.0.0.1:0")
+	httpServer := httptest.NewServer(server.Router())
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL+"/api/v1/events", nil)
+	if err != nil {
+		t.Fatalf("creating SSE request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("connecting to SSE endpoint: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if got := resp.Header.Get("Content-Type"); !strings.Contains(got, "text/event-stream") {
+		t.Fatalf("expected text/event-stream content type, got %q", got)
+	}
+
+	// The initial snapshot is sent immediately, then one frame per
+	// SSEProgressInterval. Four frames should therefore arrive in ~150ms;
+	// the generous 700ms budget avoids flaking under CI load while still
+	// failing the old 500ms cadence (which yields at most two frames).
+	const wantFrames = 4
+	const window = 700 * time.Millisecond
+
+	start := time.Now()
+	frames := 0
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		if strings.HasPrefix(scanner.Text(), "event: progress") {
+			frames++
+			if frames >= wantFrames {
+				break
+			}
+		}
+	}
+	elapsed := time.Since(start)
+
+	if err := scanner.Err(); err != nil && ctx.Err() == nil {
+		t.Fatalf("reading SSE stream: %v", err)
+	}
+	if frames < wantFrames {
+		t.Fatalf("observed only %d progress frames, want %d", frames, wantFrames)
+	}
+	if elapsed >= window {
+		t.Fatalf("%d progress frames took %v, want < %v (interval %v)", frames, elapsed, window, SSEProgressInterval)
+	}
 }
 
 func TestSSEEndpointStreaming(t *testing.T) {

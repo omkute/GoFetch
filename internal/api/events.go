@@ -9,6 +9,12 @@ import (
 	"github.com/omkute/gofetch/internal/state"
 )
 
+// SSEProgressInterval is the cadence at which progress frames are pushed to
+// SSE clients. It must stay below 100ms to satisfy the sub-100ms real-time
+// progress requirement. Lifecycle events are still forwarded immediately as
+// they arrive; only the periodic progress snapshot is governed by this value.
+const SSEProgressInterval = 50 * time.Millisecond
+
 // SSEProgressPayload aggregates active download statistics for real-time dashboards.
 type SSEProgressPayload struct {
 	ActiveDownloads int            `json:"active_downloads"`
@@ -38,7 +44,7 @@ func (s *Server) handleEventsSSE(w http.ResponseWriter, r *http.Request) {
 	)
 	defer s.eventBus.Unsubscribe(subID)
 
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(SSEProgressInterval)
 	defer ticker.Stop()
 
 	// Send initial state snapshot immediately
