@@ -22,6 +22,40 @@ import (
 	"github.com/omkute/gofetch/internal/ui"
 )
 
+// seedChunkDetails rebuilds the runtime per-chunk view from the authoritative
+// byte-range partition. It runs on every download attempt (including resume)
+// so stale per-chunk values from a previous attempt are never exposed via the
+// detail endpoint. Callers must hold jobsMu.
+func seedChunkDetails(record *jobRecord) {
+	if record == nil {
+		return
+	}
+	if record.TotalBytes <= 0 {
+		record.Chunks = make([]ChunkDetail, 0)
+		return
+	}
+
+	maxChunks := record.maxChunks
+	if maxChunks <= 0 {
+		maxChunks = engine.DefaultConcurrency
+	}
+	parts, err := engine.PartitionFile(record.TotalBytes, maxChunks)
+	if err != nil {
+		record.Chunks = make([]ChunkDetail, 0)
+		return
+	}
+
+	details := make([]ChunkDetail, len(parts))
+	for i, part := range parts {
+		details[i] = ChunkDetail{
+			ChunkIndex: part.Index,
+			StartByte:  part.Start,
+			EndByte:    part.End,
+		}
+	}
+	record.Chunks = details
+}
+
 type jobRecord struct {
 	ID              string
 	URL             string
@@ -260,6 +294,7 @@ func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
 		record.TargetPath = filepath.Join(targetDir, probe.Filename)
 	}
 	record.TotalBytes = probe.ContentLength
+	seedChunkDetails(record)
 	s.persistJob(record)
 	log.Printf("[Daemon] Started download [%s]: %s (size: %s, chunks: %d)",
 		record.ID[:8], record.FileName, ui.FormatBytes(record.TotalBytes), record.maxChunks)
@@ -299,6 +334,13 @@ func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
 		ProgressFn: func(chunkIndex int, bytesRead int) {
 			s.jobsMu.Lock()
 			record.DownloadedBytes += int64(bytesRead)
+			if chunkIndex >= 0 && chunkIndex < len(record.Chunks) {
+				chunk := &record.Chunks[chunkIndex]
+				chunk.DownloadedBytes += int64(bytesRead)
+				if chunk.DownloadedBytes >= chunk.EndByte-chunk.StartByte+1 {
+					chunk.Completed = true
+				}
+			}
 			now := time.Now()
 			dur := now.Sub(lastTime).Seconds()
 			if dur >= 0.25 {
@@ -445,6 +487,11 @@ func (s *Server) handleGetDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Snapshot the slice while holding the read lock: the progress callback
+	// mutates chunk elements under jobsMu after this handler unlocks.
+	chunks := make([]ChunkDetail, len(job.Chunks))
+	copy(chunks, job.Chunks)
+
 	resp := DownloadDetailResponse{
 		ID:              job.ID,
 		URL:             job.URL,
@@ -458,7 +505,7 @@ func (s *Server) handleGetDownload(w http.ResponseWriter, r *http.Request) {
 		ETASeconds:      job.ETASeconds,
 		Category:        job.Category,
 		Error:           job.Error,
-		Chunks:          job.Chunks,
+		Chunks:          chunks,
 	}
 	s.jobsMu.RUnlock()
 

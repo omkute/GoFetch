@@ -83,17 +83,39 @@ func (m Model) View() string {
 	// Render miniature per-chunk progress bars if multi-chunk partitioned
 	if m.tracker.NumChunks() > 1 {
 		b.WriteString("\n   Chunks:\n")
-		for i := 0; i < m.tracker.NumChunks(); i++ {
+		totalBytes := m.tracker.TotalBytes()
+		numChunks := m.tracker.NumChunks()
+		for i := 0; i < numChunks; i++ {
 			chunkBytes := m.tracker.ChunkBytes(i)
-			fmt.Fprintf(&b, "     [%d] %-12s %s\n",
-				i+1,
-				FormatBytes(chunkBytes),
-				ChunkActiveStyle.Render("▶ active"))
+			expected := expectedChunkBytes(totalBytes, numChunks, i)
+			var status string
+			switch {
+			case expected <= 0 || chunkBytes <= 0:
+				status = StatsStyle.Render("○ pending")
+			case chunkBytes >= expected:
+				status = ProgressFilledStyle.Render("✓ complete")
+			default:
+				status = ChunkActiveStyle.Render("▶ active")
+			}
+			fmt.Fprintf(&b, "     [%d] %-12s %s\n", i+1, FormatBytes(chunkBytes), status)
 		}
 	}
 	b.WriteString("\n")
 
 	return b.String()
+}
+
+// expectedChunkBytes mirrors engine.PartitionFile's remainder distribution so
+// the TUI can classify a chunk without duplicating the tracker's state model.
+func expectedChunkBytes(totalBytes int64, numChunks, index int) int64 {
+	if totalBytes <= 0 || numChunks <= 0 || index < 0 || index >= numChunks {
+		return 0
+	}
+	base := totalBytes / int64(numChunks)
+	if int64(index) < totalBytes%int64(numChunks) {
+		base++
+	}
+	return base
 }
 
 // TotalDownloaded returns total bytes transferred.

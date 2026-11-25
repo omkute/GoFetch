@@ -2,10 +2,12 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/omkute/gofetch/internal/api"
 )
@@ -135,5 +137,94 @@ func TestHandler_DownloadLifecycle(t *testing.T) {
 
 	if checkW.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 Not Found after deletion, got %d", checkW.Code)
+	}
+}
+
+func TestHandler_ChunkDetailsAfterMultiChunkDownload(t *testing.T) {
+	const chunkCount = 4
+	payload := bytes.Repeat([]byte("GoFetch chunk detail payload! "), 32*1024)
+
+	// A range-capable origin, so the engine really uses PartitionFile chunks.
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "payload.bin", time.Now(), bytes.NewReader(payload))
+	}))
+	defer fileServer.Close()
+
+	server := api.NewServer("127.0.0.1:0")
+	server.SetClient(fileServer.Client())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.Scheduler().Start(ctx)
+	defer server.Scheduler().Stop()
+	router := server.Router()
+
+	body, _ := json.Marshal(api.CreateDownloadRequest{
+		URL:            fileServer.URL + "/payload.bin",
+		DestinationDir: t.TempDir(),
+		MaxChunks:      chunkCount,
+		NoOrganize:     true,
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/downloads", bytes.NewReader(body))
+	createW := httptest.NewRecorder()
+	router.ServeHTTP(createW, createReq)
+	if createW.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted, got %d: %s", createW.Code, createW.Body.String())
+	}
+	var created api.DownloadResponse
+	if err := json.Unmarshal(createW.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed decoding create response: %v", err)
+	}
+
+	// Poll the detail endpoint while the transfer is running: this also races
+	// the handler's chunk snapshot against ProgressFn's chunk updates.
+	var detail api.DownloadDetailResponse
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/downloads/"+created.ID, nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code == http.StatusOK {
+			if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+				t.Fatalf("failed decoding detail response: %v", err)
+			}
+			if detail.Status == "completed" {
+				break
+			}
+			if detail.Status == "failed" {
+				t.Fatalf("download failed: %s", detail.Error)
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if detail.Status != "completed" {
+		t.Fatalf("download did not complete in time (status: %s)", detail.Status)
+	}
+
+	if len(detail.Chunks) != chunkCount {
+		t.Fatalf("expected %d chunks, got %d: %+v", chunkCount, len(detail.Chunks), detail.Chunks)
+	}
+
+	var nextStart int64
+	for i, chunk := range detail.Chunks {
+		if chunk.ChunkIndex != i {
+			t.Errorf("chunk %d: expected index %d, got %d", i, i, chunk.ChunkIndex)
+		}
+		if chunk.StartByte != nextStart {
+			t.Errorf("chunk %d: expected start %d, got %d", i, nextStart, chunk.StartByte)
+		}
+		size := chunk.EndByte - chunk.StartByte + 1
+		if size <= 0 {
+			t.Fatalf("chunk %d: invalid range [%d, %d]", i, chunk.StartByte, chunk.EndByte)
+		}
+		nextStart = chunk.EndByte + 1
+		if chunk.DownloadedBytes <= 0 || chunk.DownloadedBytes > size {
+			t.Errorf("chunk %d: downloaded_bytes %d outside (0, %d]", i, chunk.DownloadedBytes, size)
+		}
+		if !chunk.Completed {
+			t.Errorf("chunk %d: expected completed=true after finish", i)
+		}
+	}
+	if nextStart != detail.TotalBytes {
+		t.Errorf("chunks must cover the file: last end+1=%d, total_bytes=%d", nextStart, detail.TotalBytes)
 	}
 }

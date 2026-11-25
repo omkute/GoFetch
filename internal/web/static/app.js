@@ -10,6 +10,9 @@
     categoryFilter: "all",
     speedHistory: new Array(60).fill(0),
     eventSource: null,
+    selectedTaskId: null,
+    detailBusy: false,
+    lastDetailFetch: 0,
   };
 
   // DOM Elements
@@ -24,6 +27,10 @@
   const addModal = document.getElementById("add-modal");
   const addForm = document.getElementById("add-form");
   const speedChartCanvas = document.getElementById("speed-chart");
+  const detailDrawer = document.getElementById("detail-drawer");
+  const drawerTaskName = document.getElementById("drawer-task-name");
+  const drawerMeta = document.getElementById("drawer-meta");
+  const chunkList = document.getElementById("chunk-list");
 
   // Chart Rendering Context
   const ctx = speedChartCanvas.getContext("2d");
@@ -169,6 +176,7 @@
 
     renderTasksTable();
     renderChart();
+    if (state.selectedTaskId) refreshDetail(false);
   }
 
   // Render Table
@@ -195,6 +203,8 @@
     tasksTbody.innerHTML = "";
     filtered.forEach((t) => {
       const tr = document.createElement("tr");
+      tr.className = "task-row";
+      tr.dataset.taskId = t.id;
 
       // Status Badge Class
       let statusClass = "badge";
@@ -234,26 +244,127 @@
     });
   }
 
+  function detailButton(id) {
+    return `<button class="btn btn-secondary btn-sm" onclick="window.GoFetchActions.details('${id}')">Details</button>`;
+  }
+
   function renderActions(task) {
     if (task.status === "downloading" || task.status === "queued") {
       return `
+        ${detailButton(task.id)}
         <button class="btn btn-secondary btn-sm" onclick="window.GoFetchActions.pause('${task.id}')">Pause</button>
         <button class="btn btn-secondary btn-sm" onclick="window.GoFetchActions.delete('${task.id}')">✕</button>
       `;
     }
     if (task.status === "paused" || task.status === "failed") {
       return `
+        ${detailButton(task.id)}
         <button class="btn btn-secondary btn-sm" onclick="window.GoFetchActions.resume('${task.id}')">Resume</button>
         <button class="btn btn-secondary btn-sm" onclick="window.GoFetchActions.delete('${task.id}')">✕</button>
       `;
     }
     return `
+      ${detailButton(task.id)}
       <button class="btn btn-secondary btn-sm" onclick="window.GoFetchActions.delete('${task.id}')">Remove</button>
     `;
   }
 
+  // Task detail drawer: per-chunk view backed by GET /api/v1/downloads/{id}.
+  function openDetail(id) {
+    state.selectedTaskId = id;
+    detailDrawer.style.display = "flex";
+    const task = state.tasks.find((t) => t.id === id);
+    drawerTaskName.textContent = (task && task.file_name) || id;
+    drawerMeta.textContent = "Loading chunk details…";
+    chunkList.innerHTML = "";
+    refreshDetail(true);
+  }
+
+  function closeDetail() {
+    state.selectedTaskId = null;
+    detailDrawer.style.display = "none";
+  }
+
+  async function refreshDetail(force) {
+    const id = state.selectedTaskId;
+    if (!id || state.detailBusy) return;
+    const now = Date.now();
+    if (!force && now - state.lastDetailFetch < 1000) return;
+    state.detailBusy = true;
+    state.lastDetailFetch = now;
+    try {
+      const resp = await fetch(`/api/v1/downloads/${encodeURIComponent(id)}`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const detail = await resp.json();
+      if (state.selectedTaskId !== id) return;
+      drawerTaskName.textContent = detail.file_name || id;
+      drawerMeta.textContent = `${detail.status || "unknown"} · ${formatBytes(detail.downloaded_bytes)} / ${formatBytes(detail.total_bytes)}`;
+      renderChunks(detail.chunks);
+    } catch (err) {
+      if (state.selectedTaskId !== id) return;
+      chunkList.innerHTML = "";
+      const note = document.createElement("div");
+      note.className = "chunk-note";
+      note.textContent = "Unable to load chunk details: " + err.message;
+      chunkList.appendChild(note);
+    } finally {
+      state.detailBusy = false;
+    }
+  }
+
+  function renderChunks(chunks) {
+    chunkList.innerHTML = "";
+    if (!Array.isArray(chunks) || chunks.length === 0) {
+      const note = document.createElement("div");
+      note.className = "chunk-note";
+      note.textContent = "No chunk details available yet.";
+      chunkList.appendChild(note);
+      return;
+    }
+
+    chunks.forEach((chunk) => {
+      const start = Number(chunk.start_byte) || 0;
+      const end = Number(chunk.end_byte) || 0;
+      const downloaded = Number(chunk.downloaded_bytes) || 0;
+      const expected = Math.max(0, end - start + 1);
+      const pct = expected > 0 ? Math.min(100, Math.max(0, (downloaded / expected) * 100)) : 0;
+
+      const row = document.createElement("div");
+      row.className = "chunk-row";
+
+      const head = document.createElement("div");
+      head.className = "chunk-head";
+      const index = document.createElement("span");
+      index.className = "chunk-index";
+      index.textContent = `Chunk #${Number(chunk.chunk_index) + 1}`;
+      const range = document.createElement("span");
+      range.className = "chunk-range";
+      range.textContent = `${start}–${end}`;
+      const badge = document.createElement("span");
+      badge.className = "badge " + (chunk.completed ? "badge-success" : "badge-warning");
+      badge.textContent = chunk.completed ? "completed" : "pending";
+      head.append(index, range, badge);
+
+      const bar = document.createElement("div");
+      bar.className = "progress-bar-container";
+      bar.style.width = "100%";
+      const fill = document.createElement("div");
+      fill.className = "progress-bar-fill";
+      fill.style.width = pct.toFixed(1) + "%";
+      bar.appendChild(fill);
+
+      const label = document.createElement("div");
+      label.className = "progress-text";
+      label.textContent = `${formatBytes(downloaded)} / ${formatBytes(expected)} (${pct.toFixed(1)}%)`;
+
+      row.append(head, bar, label);
+      chunkList.appendChild(row);
+    });
+  }
+
   // Global Action Handlers
   window.GoFetchActions = {
+    details: openDetail,
     pause: async function (id) {
       try {
         await fetch(`/api/v1/downloads/${id}/pause`, { method: "POST" });
@@ -273,6 +384,7 @@
     delete: async function (id) {
       try {
         await fetch(`/api/v1/downloads/${id}?delete_files=true`, { method: "DELETE" });
+        if (state.selectedTaskId === id) closeDetail();
         showToast("Download deleted");
       } catch (e) {
         showToast("Error deleting: " + e.message);
@@ -336,6 +448,17 @@
         state.categoryFilter = el.dataset.category;
         renderTasksTable();
       });
+    });
+
+    // Task detail drawer
+    document.getElementById("drawer-close-btn").addEventListener("click", closeDetail);
+    detailDrawer.addEventListener("click", (e) => {
+      if (e.target === detailDrawer) closeDetail();
+    });
+    tasksTbody.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      const row = e.target.closest("tr[data-task-id]");
+      if (row) openDetail(row.dataset.taskId);
     });
 
     // Pause all / Resume all

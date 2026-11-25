@@ -2,6 +2,7 @@ package ui_test
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -44,4 +45,44 @@ func TestModel_View(t *testing.T) {
 	if !strings.Contains(view, "0.0%") {
 		t.Errorf("expected view to show initial progress 0.0%%, got:\n%s", view)
 	}
+}
+
+func TestModel_View_ChunkStates(t *testing.T) {
+	const total = int64(1024)
+	const numChunks = 4
+	tracker := ui.NewProgressTracker(total, numChunks)
+	// Each chunk holds 256 bytes: chunk 1 is done, chunk 2 is in flight,
+	// chunks 3 and 4 have not started.
+	tracker.AddChunkBytes(0, 256)
+	tracker.AddChunkBytes(1, 100)
+
+	view := ui.NewModel(tracker, "states.bin").View()
+
+	tests := []struct {
+		index int
+		want  string
+	}{
+		{1, "complete"},
+		{2, "active"},
+		{3, "pending"},
+		{4, "pending"},
+	}
+	for _, tc := range tests {
+		line := chunkLine(t, view, tc.index)
+		if !strings.Contains(line, tc.want) {
+			t.Errorf("chunk %d: expected %q state in line %q", tc.index, tc.want, line)
+		}
+	}
+}
+
+func chunkLine(t *testing.T, view string, index int) string {
+	t.Helper()
+	prefix := fmt.Sprintf("[%d]", index)
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, prefix) {
+			return line
+		}
+	}
+	t.Fatalf("no row for chunk %d in view:\n%s", index, view)
+	return ""
 }
