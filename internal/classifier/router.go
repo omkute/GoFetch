@@ -4,17 +4,20 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
 
 // Router classifies completed downloads and moves them into categorized subfolders.
 type Router struct {
-	baseDir    string
-	classifier *Classifier
+	baseDir       string
+	classifier    *Classifier
+	categoryPaths map[string]string
 }
 
 // NewRouter creates a new Router with destination subfolders rooted at baseDir.
+// Categories use their built-in folder names.
 func NewRouter(baseDir string) *Router {
 	if baseDir == "" {
 		baseDir = "."
@@ -23,6 +26,56 @@ func NewRouter(baseDir string) *Router {
 		baseDir:    baseDir,
 		classifier: NewClassifier(),
 	}
+}
+
+// NewRouterWithPaths creates a Router rooted at baseDir with optional per-category
+// folder names. Keys are category names (e.g. "Videos"); values are folder names
+// relative to baseDir. Categories without an override keep their built-in folder
+// name. Every configured value is validated before the Router is returned, so an
+// unsafe mapping can never cause a directory to be created outside baseDir.
+func NewRouterWithPaths(baseDir string, categoryPaths map[string]string) (*Router, error) {
+	if err := ValidateCategoryPaths(categoryPaths); err != nil {
+		return nil, err
+	}
+
+	router := NewRouter(baseDir)
+	if len(categoryPaths) > 0 {
+		router.categoryPaths = make(map[string]string, len(categoryPaths))
+		for category, folder := range categoryPaths {
+			if folder != "" {
+				router.categoryPaths[category] = folder
+			}
+		}
+	}
+	return router, nil
+}
+
+// ValidateCategoryPaths checks that every configured folder name is a safe
+// relative path: absolute paths, ".." segments, and null bytes are rejected.
+func ValidateCategoryPaths(categoryPaths map[string]string) error {
+	for category, folder := range categoryPaths {
+		if folder == "" {
+			continue // empty value means "no override"
+		}
+		if strings.ContainsRune(folder, 0) {
+			return fmt.Errorf("category %q path %q contains a null byte", category, folder)
+		}
+		normalized := strings.ReplaceAll(folder, `\`, "/")
+		if filepath.IsAbs(folder) || path.IsAbs(normalized) || hasWindowsDrive(normalized) {
+			return fmt.Errorf("category %q path %q must be relative, not absolute", category, folder)
+		}
+		for _, segment := range strings.Split(normalized, "/") {
+			if segment == ".." {
+				return fmt.Errorf("category %q path %q contains a parent-directory segment", category, folder)
+			}
+		}
+	}
+	return nil
+}
+
+func hasWindowsDrive(value string) bool {
+	return len(value) >= 2 && value[1] == ':' &&
+		((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z'))
 }
 
 // Route inspects the file at sourcePath, determines its media Category,
@@ -38,8 +91,12 @@ func (r *Router) Route(sourcePath string) (string, error) {
 		return "", fmt.Errorf("failed to classify file %q: %w", sourcePath, err)
 	}
 
-	// 2. Ensure category directory exists
-	targetDir := filepath.Join(r.baseDir, string(category))
+	// 2. Ensure category directory exists (honoring a configured folder override)
+	folderName := string(category)
+	if custom, ok := r.categoryPaths[string(category)]; ok && custom != "" {
+		folderName = custom
+	}
+	targetDir := filepath.Join(r.baseDir, folderName)
 	if err := os.MkdirAll(targetDir, 0750); err != nil {
 		return "", fmt.Errorf("failed to create destination directory %q: %w", targetDir, err)
 	}

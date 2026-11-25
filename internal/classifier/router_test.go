@@ -3,6 +3,7 @@ package classifier_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/omkute/gofetch/internal/classifier"
@@ -36,6 +37,74 @@ func TestRouter_RouteFile(t *testing.T) {
 	// Verify original file in root is gone
 	if _, err := os.Stat(sourceFile); !os.IsNotExist(err) {
 		t.Fatalf("source file %q still exists in root folder", sourceFile)
+	}
+}
+
+func TestRouter_CustomCategoryPath(t *testing.T) {
+	tempDir := t.TempDir()
+	sourceFile := filepath.Join(tempDir, "custom.pdf")
+	if err := os.WriteFile(sourceFile, []byte("%PDF-1.7 custom folder"), 0600); err != nil {
+		t.Fatalf("failed to write source file: %v", err)
+	}
+
+	router, err := classifier.NewRouterWithPaths(tempDir, map[string]string{
+		"Documents": "Papers",
+	})
+	if err != nil {
+		t.Fatalf("NewRouterWithPaths failed: %v", err)
+	}
+
+	destPath, err := router.Route(sourceFile)
+	if err != nil {
+		t.Fatalf("Route failed: %v", err)
+	}
+	expected := filepath.Join(tempDir, "Papers", "custom.pdf")
+	if destPath != expected {
+		t.Fatalf("expected custom folder path %q, got %q", expected, destPath)
+	}
+	if _, err := os.Stat(expected); err != nil {
+		t.Fatalf("file not found at custom folder path: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tempDir, string(classifier.CategoryDocuments))); !os.IsNotExist(err) {
+		t.Fatal("default category directory should not have been created")
+	}
+}
+
+func TestNewRouterWithPaths_RejectsUnsafeMappings(t *testing.T) {
+	cases := []struct {
+		name   string
+		folder string
+		reason string
+	}{
+		{"absolute path", "/etc/evil", "absolute"},
+		{"parent segment", "../escape", "parent-directory"},
+		{"nested parent segment", "Media/../../escape", "parent-directory"},
+		{"windows parent segment", `Media\..\escape`, "parent-directory"},
+		{"windows absolute path", `C:\evil`, "absolute"},
+		{"null byte", "Videos\x00evil", "null byte"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router, err := classifier.NewRouterWithPaths(t.TempDir(), map[string]string{
+				"Videos": tc.folder,
+			})
+			if err == nil {
+				t.Fatalf("expected error for folder %q, got router %+v", tc.folder, router)
+			}
+			if !strings.Contains(err.Error(), "Videos") || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("error %q should name the category and explain the rejection", err)
+			}
+		})
+	}
+}
+
+func TestValidateCategoryPaths_AllowsRelativeNames(t *testing.T) {
+	if err := classifier.ValidateCategoryPaths(map[string]string{
+		"Videos":    "Media/Videos",
+		"Documents": "",
+	}); err != nil {
+		t.Fatalf("expected nested/empty folder names to be valid, got: %v", err)
 	}
 }
 

@@ -37,6 +37,7 @@ type Server struct {
 	checkpointStore   engine.CheckpointStore
 	eventBus          *state.EventBus
 	globalRateLimiter *engine.RateLimiter
+	config            DaemonConfig
 	startTime         time.Time
 
 	// Progress snapshots are handed off through a buffered channel so that no
@@ -47,22 +48,50 @@ type Server struct {
 	persistOnce   sync.Once
 }
 
-func defaultStreamingClient() *http.Client {
+// defaultStreamingDialTimeout bounds TCP connection establishment for the
+// streaming client. It is deliberately not an overall request deadline.
+const defaultStreamingDialTimeout = 30 * time.Second
+
+// streamingTransport keeps the configured dial timeout inspectable without
+// changing how http.Client uses the underlying transport.
+type streamingTransport struct {
+	*http.Transport
+	dialTimeout time.Duration
+}
+
+// NewStreamingClient returns a fresh HTTP client tuned for large streaming
+// transfers. Client.Timeout stays at zero so arbitrarily large bodies can be
+// streamed without an arbitrary overall deadline.
+func NewStreamingClient() *http.Client {
+	return NewStreamingClientWithDialTimeout(defaultStreamingDialTimeout)
+}
+
+// NewStreamingClientWithDialTimeout returns a streaming client whose TCP dial
+// phase is bounded by dialTimeout. Client.Timeout remains zero and the existing
+// response-header timeout is preserved.
+func NewStreamingClientWithDialTimeout(dialTimeout time.Duration) *http.Client {
+	if dialTimeout < 0 {
+		dialTimeout = 0
+	}
+	dialer := &net.Dialer{
+		Timeout:   dialTimeout,
+		KeepAlive: 30 * time.Second,
+	}
 	return &http.Client{
-		Timeout: 0, // No overall timeout; allows streaming arbitrarily large files without arbitrary deadlines
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   10,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 30 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
+		Timeout: 0, // No overall deadline; would truncate large streaming bodies.
+		Transport: &streamingTransport{
+			Transport: &http.Transport{
+				Proxy:                 http.ProxyFromEnvironment,
+				DialContext:           dialer.DialContext,
+				ForceAttemptHTTP2:     true,
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   10,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 30 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+			},
+			dialTimeout: dialTimeout,
 		},
 	}
 }
@@ -73,11 +102,16 @@ func NewServer(addr string) *Server {
 	if addr == "" {
 		addr = DefaultAddr
 	}
+	autoClassify := true
 	return &Server{
-		addr:              addr,
-		ready:             make(chan struct{}),
-		jobs:              make(map[string]*jobRecord),
-		httpClient:        defaultStreamingClient(),
+		addr:       addr,
+		ready:      make(chan struct{}),
+		jobs:       make(map[string]*jobRecord),
+		httpClient: NewStreamingClient(),
+		config: DaemonConfig{
+			DefaultAutoClassify: &autoClassify,
+			EnableWebGUI:        true,
+		},
 		scheduler:         queue.NewScheduler(3),
 		eventBus:          state.NewEventBus(1024),
 		globalRateLimiter: engine.NewRateLimiter(0),
@@ -292,6 +326,10 @@ func (s *Server) Start() error {
 	s.mu.Unlock()
 	go s.runPersistConsumer(persistCtx)
 
+	// Build the router before taking s.mu: setupRoutes reads the installed
+	// daemon config and would otherwise deadlock on the same lock.
+	handler := s.setupRoutes()
+
 	s.mu.Lock()
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
@@ -302,7 +340,7 @@ func (s *Server) Start() error {
 	s.listener = ln
 	s.actualAddr = ln.Addr().String()
 	s.httpServer = &http.Server{
-		Handler:           s.setupRoutes(),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	close(s.ready)

@@ -50,7 +50,7 @@ func (c *Coordinator) DownloadResumable(ctx context.Context, jobID string, probe
 // revalidateResource sends an If-Range/ETag conditional request before a resume.
 // Status 206 means the entity is unchanged and staged offsets remain valid;
 // status 200 means it changed and the staged bytes must be discarded.
-func revalidateResource(ctx context.Context, client *http.Client, url, etag string, offset int64) (bool, error) {
+func revalidateResource(ctx context.Context, client *http.Client, url, etag, userAgent string, offset int64) (bool, error) {
 	if etag == "" {
 		return true, nil
 	}
@@ -61,7 +61,7 @@ func revalidateResource(ctx context.Context, client *http.Client, url, etag stri
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset))
 	req.Header.Set("If-Range", etag)
-	req.Header.Set("User-Agent", DefaultUserAgent)
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -87,6 +87,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 	if probe == nil {
 		return "", errors.New("probe info cannot be nil")
 	}
+	userAgent := resolveUserAgent(opts.UserAgent)
 
 	// Architectural Invariant: Safely downgrade if Range headers are not supported or size is unknown
 	if !probe.AcceptRanges || probe.ContentLength <= 0 {
@@ -128,7 +129,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 							break
 						}
 					}
-					unchanged, valErr := revalidateResource(ctx, c.client, downloadURL, cp.ETag, probeOffset)
+					unchanged, valErr := revalidateResource(ctx, c.client, downloadURL, cp.ETag, userAgent, probeOffset)
 					if valErr == nil && unchanged {
 						chunks = cp.Chunks
 						resumeETag = cp.ETag
@@ -220,7 +221,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 			}
 
 			dlErr := ExecuteWithRetry(ctx, retryCfg, func() error {
-				return downloadChunk(ctx, c.client, downloadURL, chunk, writer, opts.RateLimiter, opts.ProgressFn, resumeETag, tracker)
+				return downloadChunk(ctx, c.client, downloadURL, chunk, writer, opts.RateLimiter, opts.ProgressFn, resumeETag, userAgent, tracker)
 			})
 
 			if opts.Semaphore != nil {
@@ -249,7 +250,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 				}
 
 				return ExecuteWithRetry(gCtx, retryCfg, func() error {
-					return downloadChunk(gCtx, c.client, downloadURL, chunk, writer, opts.RateLimiter, opts.ProgressFn, resumeETag, tracker)
+					return downloadChunk(gCtx, c.client, downloadURL, chunk, writer, opts.RateLimiter, opts.ProgressFn, resumeETag, userAgent, tracker)
 				})
 			})
 		}
@@ -314,7 +315,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 }
 
 // downloadChunk streams an individual byte range [Current, End] directly into disk via WriteAt.
-func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *Chunk, writer *storage.FileWriter, limiter *RateLimiter, progressFn func(chunkIndex int, bytesRead int), ifRange string, tracker *checkpointTracker) error {
+func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *Chunk, writer *storage.FileWriter, limiter *RateLimiter, progressFn func(chunkIndex int, bytesRead int), ifRange, userAgent string, tracker *checkpointTracker) error {
 	if chunk.Completed || chunk.Remaining() <= 0 {
 		return nil
 	}
@@ -325,7 +326,7 @@ func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *
 	}
 
 	req.Header.Set("Range", chunk.RangeHeader())
-	req.Header.Set("User-Agent", DefaultUserAgent)
+	req.Header.Set("User-Agent", userAgent)
 	if ifRange != "" {
 		req.Header.Set("If-Range", ifRange)
 	}

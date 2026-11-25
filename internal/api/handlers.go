@@ -144,19 +144,29 @@ func (s *Server) queuePersistSnapshot(job *jobRecord) {
 }
 
 func (s *Server) enqueueDownload(req CreateDownloadRequest) DownloadResponse {
+	cfg := s.daemonConfig()
+
 	priority := req.Priority
 	if priority == "" {
 		priority = "normal"
 	}
 
+	// Request fields take precedence over daemon config defaults, which in
+	// turn take precedence over the built-in engine defaults.
 	destDir := req.DestinationDir
+	if destDir == "" {
+		destDir = cfg.DefaultDestDir
+	}
 	if destDir == "" {
 		destDir = "."
 	}
 
 	maxChunks := req.MaxChunks
 	if maxChunks <= 0 {
-		maxChunks = 4
+		maxChunks = cfg.DefaultMaxChunks
+	}
+	if maxChunks <= 0 {
+		maxChunks = engine.DefaultConcurrency
 	}
 
 	var limiter *engine.RateLimiter
@@ -171,12 +181,14 @@ func (s *Server) enqueueDownload(req CreateDownloadRequest) DownloadResponse {
 	rawName := path.Base(cleanURL)
 	fileName := engine.SanitizeFilename(rawName)
 
-	// Classification flag
+	// Classification flag: explicit request fields win over config defaults.
 	autoClassify := true
 	if req.NoOrganize {
 		autoClassify = false
 	} else if req.AutoClassify != nil {
 		autoClassify = *req.AutoClassify
+	} else if cfg.DefaultAutoClassify != nil {
+		autoClassify = *cfg.DefaultAutoClassify
 	}
 
 	id := generateID()
@@ -246,6 +258,7 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
+	cfg := s.daemonConfig()
 	taskCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -261,7 +274,7 @@ func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
 
 	client := s.getClient()
 	probeCtx, probeCancel := context.WithTimeout(taskCtx, 30*time.Second)
-	probe, err := engine.Probe(probeCtx, client, record.URL)
+	probe, err := engine.ProbeWithOptions(probeCtx, client, record.URL, engine.ProbeOptions{UserAgent: cfg.UserAgent})
 	probeCancel()
 	if err != nil {
 		s.jobsMu.Lock()
@@ -331,6 +344,7 @@ func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
 		RateLimiter:  effectiveLimiter,
 		Checksum:     record.checksum,
 		ChecksumAlgo: record.checksumAlgo,
+		UserAgent:    cfg.UserAgent,
 		ProgressFn: func(chunkIndex int, bytesRead int) {
 			s.jobsMu.Lock()
 			record.DownloadedBytes += int64(bytesRead)
@@ -414,8 +428,12 @@ func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
 			record.Category = string(cat)
 		}
 
-		router := classifier.NewRouter(targetDir)
-		if classifiedPath, routeErr := router.Route(finalPath); routeErr == nil {
+		router, routeErr := classifier.NewRouterWithPaths(targetDir, cfg.CategoryPaths)
+		if routeErr != nil {
+			// Config validation happens when defaults are installed, so this is
+			// defensive: never create a directory from an unsafe mapping.
+			log.Printf("[Daemon] Download [%s] skipped classification routing: %v", record.ID[:8], routeErr)
+		} else if classifiedPath, routeErr := router.Route(finalPath); routeErr == nil {
 			record.TargetPath = classifiedPath
 		}
 	} else {

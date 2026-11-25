@@ -42,6 +42,19 @@ func newDaemonCmd() *cobra.Command {
 
 			server := api.NewServer(addr)
 
+			autoClassify := cfg.Storage.AutoClassify
+			if err := server.SetDaemonConfig(api.DaemonConfig{
+				DefaultMaxChunks:     cfg.Concurrency.ChunksPerDownload,
+				DefaultDestDir:       cfg.Storage.DefaultDownloadDir,
+				DefaultAutoClassify:  &autoClassify,
+				CategoryPaths:        cfg.Storage.CategoryPaths,
+				UserAgent:            cfg.Network.UserAgent,
+				ConnectionTimeoutSec: cfg.Network.ConnectionTimeout,
+				EnableWebGUI:         cfg.Daemon.EnableWebGUI,
+			}); err != nil {
+				return fmt.Errorf("configuration error: %w", err)
+			}
+
 			limit, fifo := resolveDaemonConcurrency(
 				maxConcurrent,
 				cmd.Flags().Changed("max-concurrent"),

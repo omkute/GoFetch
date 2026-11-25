@@ -51,6 +51,7 @@ func (c *Coordinator) DownloadSingleStreamWithOptions(ctx context.Context, probe
 	if probe == nil {
 		return "", errors.New("probe info cannot be nil")
 	}
+	userAgent := resolveUserAgent(opts.UserAgent)
 
 	absDir, err := CleanDestinationPath(opts.DestDir)
 	if err != nil {
@@ -78,7 +79,7 @@ func (c *Coordinator) DownloadSingleStreamWithOptions(ctx context.Context, probe
 					if probe.ContentLength >= 0 && offset > probe.ContentLength {
 						offset = probe.ContentLength
 					}
-					unchanged, valErr := revalidateResource(ctx, c.client, downloadURL, cp.ETag, offset)
+					unchanged, valErr := revalidateResource(ctx, c.client, downloadURL, cp.ETag, userAgent, offset)
 					if valErr == nil && unchanged {
 						resumeOffset = offset
 						resumeETag = cp.ETag
@@ -135,7 +136,7 @@ func (c *Coordinator) DownloadSingleStreamWithOptions(ctx context.Context, probe
 	if err != nil {
 		return "", fmt.Errorf("failed to build download request: %w", err)
 	}
-	req.Header.Set("User-Agent", DefaultUserAgent)
+	req.Header.Set("User-Agent", userAgent)
 	if resumeOffset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeOffset))
 		if resumeETag != "" {

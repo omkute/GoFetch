@@ -176,36 +176,35 @@ gofetch stats
 
 ## ⚙️ Configuration (`~/.gofetch/config.yaml`)
 
-GoFetch automatically discovers configuration files from `~/.gofetch/config.yaml`, the current directory, or via the `--config` flag.
+The daemon discovers configuration from `$GOFETCH_CONFIG`, `~/.gofetch/config.yaml`, or `./config.yaml`; use `gofetch daemon --config <path>` to select a file explicitly. Unknown keys are rejected with an error naming the config file.
+
+The complete schema is:
 
 ```yaml
 concurrency:
-  max_concurrent_downloads: 3 # global limit; flag -j/--max-concurrent overrides
-  chunks_per_download: 4
-
-general:
-  download_dir: "~/Downloads"
-  auto_classify: true
-  default_priority: "normal"
-
-network:
-  default_chunks_per_task: 4
-  global_rate_limit_bps: 20971520 # 20 MB/s
-  connect_timeout_seconds: 30
-  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) GoFetch/2.0"
-
+  max_concurrent_downloads: 3 # global download limit
+  chunks_per_download: 4      # default chunk count when a request omits max_chunks
 storage:
-  part_file_extension: ".gofetch.part"
-  preallocate_sparse: true
-  fsync_on_checkpoint: true
-
-categories:
-  Videos: [".mp4", ".mkv", ".avi", ".mov", ".flv", ".webm"]
-  Audio: [".mp3", ".flac", ".wav", ".aac", ".ogg", ".m4a"]
-  Documents: [".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".epub"]
-  Archives: [".zip", ".tar.gz", ".tar.bz2", ".tar.xz", ".7z", ".rar"]
-  Software: [".dmg", ".pkg", ".deb", ".rpm", ".exe", ".iso", ".appimage"]
+  default_download_dir: "/absolute/path/to/Downloads" # default destination when a request omits destination_dir
+  auto_classify: true                 # default classification when a request omits auto_classify
+  category_paths:                     # category -> folder name (relative to the download directory)
+    Videos: "Videos"
+    Documents: "Documents"
+network:
+  user_agent: "GoFetch/2.0"
+  connection_timeout_sec: 30
+  global_rate_limit_bps: 20971520 # 20 MB/s
+daemon:
+  listen_addr: "127.0.0.1:12701"
+  enable_web_gui: true
+  task_db_path: "/absolute/path/to/.gofetch/daemon_tasks.db"
 ```
+
+Use absolute paths in the YAML file; the loader does not expand `~`. When no config file is found, defaults for the download directory and task DB are derived from the current user's home directory.
+
+Paths in `storage.category_paths` must be relative folder names; absolute paths, `..` segments, and null bytes are rejected. Per-category folder names may be nested (for example `Media/Videos`), and categories not listed use their built-in folder names.
+
+**Precedence:** an explicit flag or request field wins over the config file, which wins over the built-in default. For example `gofetch daemon -j 1` overrides `concurrency.max_concurrent_downloads`, while a `POST /api/v1/downloads` body with `max_chunks`, `destination_dir`, `auto_classify`, `no_organize`, or `rate_limit` overrides the corresponding config default. Configuration currently applies to the daemon path; standalone/root `--config` is not wired yet.
 
 ---
 

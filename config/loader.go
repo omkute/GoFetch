@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -88,8 +90,12 @@ func LoadConfig(explicitPath string) (*Config, error) {
 		return cfg, nil
 	}
 
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("failed parsing config YAML %q: %w", targetPath, err)
+	// Strict decoding rejects unknown or misspelled keys instead of silently
+	// ignoring them, so a typo in the config file cannot disable a setting.
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("invalid config file %q: %w", targetPath, err)
 	}
 
 	if err := cfg.Validate(); err != nil {

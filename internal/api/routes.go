@@ -39,7 +39,11 @@ func (s *Server) setupRoutes() http.Handler {
 		})
 	})
 
-	r.Handle("/*", web.Handler())
+	// The REST and health endpoints are always available; the embedded GUI
+	// and its static assets are mounted only when enabled.
+	if s.daemonConfig().EnableWebGUI {
+		r.Handle("/*", web.Handler())
+	}
 
 	return r
 }

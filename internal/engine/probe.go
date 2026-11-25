@@ -93,17 +93,26 @@ func extractFilename(header string, rawURL string) string {
 
 // Probe inspects a remote URL using HTTP HEAD (falling back to GET if unsupported)
 // and extracts content metadata, range support, and a sanitized target filename.
+// It uses the standard engine user agent; callers that need a custom one should
+// use ProbeWithOptions.
 func Probe(ctx context.Context, client *http.Client, targetURL string) (*ResourceInfo, error) {
+	return ProbeWithOptions(ctx, client, targetURL, ProbeOptions{})
+}
+
+// ProbeWithOptions inspects a remote URL like Probe, honoring the user agent
+// supplied in opts. An empty user agent falls back to DefaultUserAgent.
+func ProbeWithOptions(ctx context.Context, client *http.Client, targetURL string, opts ProbeOptions) (*ResourceInfo, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
+	userAgent := resolveUserAgent(opts.UserAgent)
 
 	// 1. First attempt HEAD request
 	headReq, err := http.NewRequestWithContext(ctx, http.MethodHead, targetURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HEAD request: %w", err)
 	}
-	headReq.Header.Set("User-Agent", DefaultUserAgent)
+	headReq.Header.Set("User-Agent", userAgent)
 
 	resp, err := client.Do(headReq)
 	if err == nil {
@@ -122,7 +131,7 @@ func Probe(ctx context.Context, client *http.Client, targetURL string) (*Resourc
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fallback GET request: %w", err)
 	}
-	getReq.Header.Set("User-Agent", DefaultUserAgent)
+	getReq.Header.Set("User-Agent", userAgent)
 	// Request a single byte to avoid streaming entire body during probe if Range is supported
 	getReq.Header.Set("Range", "bytes=0-0")
 

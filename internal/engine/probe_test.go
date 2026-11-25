@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -190,5 +192,62 @@ func TestProbe_FallbackToGetWhenHeadMethodNotAllowed(t *testing.T) {
 	}
 	if !info.AcceptRanges {
 		t.Errorf("expected AcceptRanges to be true from GET response")
+	}
+}
+
+func TestUserAgentOverride_ProbeAndChunkRequests(t *testing.T) {
+	payload := bytes.Repeat([]byte("user-agent payload "), 1024)
+	var mu sync.Mutex
+	var agents []string
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		agents = append(agents, r.Header.Get("User-Agent"))
+		mu.Unlock()
+		http.ServeContent(w, r, "payload.bin", time.Now(), bytes.NewReader(payload))
+	}))
+	defer origin.Close()
+
+	const customAgent = "GoFetch-Custom/2.0"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	client := origin.Client()
+	probe, err := engine.ProbeWithOptions(ctx, client, origin.URL+"/payload.bin", engine.ProbeOptions{UserAgent: customAgent})
+	if err != nil {
+		t.Fatalf("ProbeWithOptions failed: %v", err)
+	}
+	if _, err := engine.NewCoordinator(client).DownloadWithOptions(ctx, probe, engine.DownloadOptions{
+		DestDir:    t.TempDir(),
+		MaxWorkers: 2,
+		UserAgent:  customAgent,
+	}); err != nil {
+		t.Fatalf("DownloadWithOptions failed: %v", err)
+	}
+
+	mu.Lock()
+	seen := append([]string(nil), agents...)
+	agents = nil
+	mu.Unlock()
+	if len(seen) < 2 {
+		t.Fatalf("expected probe and chunk requests, got %d requests", len(seen))
+	}
+	for _, agent := range seen {
+		if agent != customAgent {
+			t.Errorf("User-Agent = %q, want %q", agent, customAgent)
+		}
+	}
+
+	// Empty options must keep the historical default agent.
+	if _, err := engine.ProbeWithOptions(ctx, client, origin.URL+"/payload.bin", engine.ProbeOptions{}); err != nil {
+		t.Fatalf("ProbeWithOptions with default agent failed: %v", err)
+	}
+	mu.Lock()
+	seen = append([]string(nil), agents...)
+	mu.Unlock()
+	for _, agent := range seen {
+		if agent != engine.DefaultUserAgent {
+			t.Errorf("default User-Agent = %q, want %q", agent, engine.DefaultUserAgent)
+		}
 	}
 }
