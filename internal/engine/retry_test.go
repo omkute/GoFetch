@@ -1,9 +1,14 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +34,8 @@ func TestIsTransient(t *testing.T) {
 		{"context.Canceled", context.Canceled, 0, false},
 		{"context.DeadlineExceeded", context.DeadlineExceeded, 0, false},
 		{"generic transient error", errors.New("connection reset by peer"), 0, true},
+		{"typed HTTPStatusError 503", &engine.HTTPStatusError{StatusCode: http.StatusServiceUnavailable, Status: "503 Service Unavailable"}, 0, true},
+		{"typed HTTPStatusError 404", &engine.HTTPStatusError{StatusCode: http.StatusNotFound, Status: "404 Not Found"}, 0, false},
 	}
 
 	for _, tc := range testCases {
@@ -64,6 +71,62 @@ func TestExecuteWithRetry_SuccessAfterTransientErrors(t *testing.T) {
 	}
 	if attempts != 3 {
 		t.Errorf("expected 3 attempts, got %d", attempts)
+	}
+}
+
+// A real httptest server returning 503 twice before a 206 proves that the
+// status code rides through HTTPStatusError into ExecuteWithRetry's backoff.
+func TestDownloadWithOptions_RetriesTransientHTTPStatus(t *testing.T) {
+	const payload = "transient status retry payload"
+	var rangeRequests atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") == "" {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(payload))
+			return
+		}
+		if rangeRequests.Add(1) <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(payload)-1, len(payload)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer server.Close()
+
+	url := server.URL + "/retry.bin"
+	probe := &engine.ResourceInfo{
+		URL:           url,
+		FinalURL:      url,
+		Filename:      "retry.bin",
+		ContentLength: int64(len(payload)),
+		AcceptRanges:  true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	coordinator := engine.NewCoordinator(server.Client())
+	finalPath, err := coordinator.DownloadWithOptions(ctx, probe, engine.DownloadOptions{
+		DestDir:    t.TempDir(),
+		MaxWorkers: 1,
+	})
+	if err != nil {
+		t.Fatalf("expected success after two 503 responses, got: %v", err)
+	}
+
+	data, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatalf("failed to read committed file: %v", err)
+	}
+	if !bytes.Equal(data, []byte(payload)) {
+		t.Fatalf("file content mismatch: expected %q, got %q", payload, string(data))
+	}
+	if got := rangeRequests.Load(); got != 3 {
+		t.Fatalf("expected exactly 3 Range requests (503, 503, 206), got %d", got)
 	}
 }
 

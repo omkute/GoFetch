@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -141,6 +145,92 @@ func TestCoordinator_DownloadParallel_Integration(t *testing.T) {
 
 	if !bytes.Equal(downloadedData, expectedPayload) {
 		t.Fatalf("downloaded file contents do not match expected payload (data corruption)")
+	}
+}
+
+// A server can advertise Accept-Ranges: bytes yet answer every Range GET with
+// a full 200 OK. The coordinator must discard the parallel staging file and
+// fall back to a single-stream GET, without bypassing checksum verification.
+func TestCoordinator_DownloadWithOptions_LateRangeDowngrade(t *testing.T) {
+	payload := []byte("late 200 response to a range request must downgrade to a single stream")
+	digest := sha256.Sum256(payload)
+	goodChecksum := hex.EncodeToString(digest[:])
+
+	testCases := []struct {
+		name     string
+		checksum string
+		wantErr  bool
+	}{
+		{name: "valid checksum", checksum: goodChecksum},
+		{name: "invalid checksum", checksum: strings.Repeat("0", 64), wantErr: true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var rangeGETs, plainGETs atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Accept-Ranges", "bytes")
+				w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+				if r.Header.Get("Range") != "" {
+					rangeGETs.Add(1)
+					// Ignore the Range header and return the whole entity with 200 OK.
+				} else {
+					plainGETs.Add(1)
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(payload)
+			}))
+			defer server.Close()
+
+			url := server.URL + "/late_downgrade.bin"
+			probe := &engine.ResourceInfo{
+				URL:           url,
+				FinalURL:      url,
+				Filename:      "late_downgrade.bin",
+				ContentLength: int64(len(payload)),
+				AcceptRanges:  true,
+			}
+			tempDir := t.TempDir()
+			finalPath := filepath.Join(tempDir, probe.Filename)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			coordinator := engine.NewCoordinator(server.Client())
+			_, err := coordinator.DownloadWithOptions(ctx, probe, engine.DownloadOptions{
+				DestDir:      tempDir,
+				MaxWorkers:   4,
+				Checksum:     tc.checksum,
+				ChecksumAlgo: "sha256",
+			})
+
+			if rangeGETs.Load() == 0 {
+				t.Fatal("expected the parallel path to issue at least one Range GET")
+			}
+			if plainGETs.Load() == 0 {
+				t.Fatal("expected a GET without a Range header, proving single-stream fallback")
+			}
+
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected a checksum mismatch error, got nil")
+				}
+				if _, statErr := os.Stat(finalPath); !os.IsNotExist(statErr) {
+					t.Fatalf("corrupt file must not be committed at %q: %v", finalPath, statErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected single-stream fallback to succeed, got: %v", err)
+			}
+			data, readErr := os.ReadFile(finalPath)
+			if readErr != nil {
+				t.Fatalf("failed to read committed file: %v", readErr)
+			}
+			if !bytes.Equal(data, payload) {
+				t.Fatalf("file content mismatch: expected %q, got %q", payload, string(data))
+			}
+		})
 	}
 }
 

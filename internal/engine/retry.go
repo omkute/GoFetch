@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"math/rand"
@@ -30,14 +31,44 @@ func DefaultRetryConfig() RetryConfig {
 	}
 }
 
+// HTTPStatusError carries the status returned by a failed HTTP request so retry
+// decisions use the real response code instead of parsing an error string.
+// It may wrap an underlying cause while preserving errors.Is/errors.As chains.
+type HTTPStatusError struct {
+	StatusCode int
+	Status     string
+	Err        error
+}
+
+func (e *HTTPStatusError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("HTTP status %d (%s): %v", e.StatusCode, e.Status, e.Err)
+	}
+	return fmt.Sprintf("HTTP status %d (%s)", e.StatusCode, e.Status)
+}
+
+func (e *HTTPStatusError) Unwrap() error {
+	return e.Err
+}
+
+// isTransientStatus reports whether an HTTP status code is safe to retry.
+func isTransientStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
 // IsTransient evaluates whether an HTTP status code or Go error represents a transient failure
 // that is safe to retry.
 func IsTransient(err error, statusCode int) bool {
-	if statusCode == http.StatusTooManyRequests ||
-		statusCode == http.StatusInternalServerError ||
-		statusCode == http.StatusBadGateway ||
-		statusCode == http.StatusServiceUnavailable ||
-		statusCode == http.StatusGatewayTimeout {
+	if isTransientStatus(statusCode) {
 		return true
 	}
 
@@ -47,6 +78,13 @@ func IsTransient(err error, statusCode int) bool {
 
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
+	}
+
+	// The typed error carries the authoritative status code; ExecuteWithRetry
+	// passes 0 for statusCode, so detect it before falling back to string heuristics.
+	var statusErr *HTTPStatusError
+	if errors.As(err, &statusErr) && statusErr != nil {
+		return isTransientStatus(statusErr.StatusCode)
 	}
 
 	var netErr net.Error

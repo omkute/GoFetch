@@ -22,6 +22,11 @@ const DefaultConcurrency = 4
 // not be reused; the caller should retry from scratch.
 var ErrResourceChanged = errors.New("resource changed during download; partial data cannot be resumed")
 
+// ErrRangeUnsupported indicates the server ignored a Range request and returned
+// the whole entity with 200 OK. The parallel transfer must be discarded and the
+// download retried as a single stream.
+var ErrRangeUnsupported = errors.New("server ignored Range request; download must fall back to single stream")
+
 // DownloadParallel executes a concurrent, multi-chunk partitioned download.
 // If the target server lacks byte Range support, it automatically downgrades to
 // single-stream download without breaking invariant safety.
@@ -259,6 +264,17 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 		tracker.stop()
 	}
 
+	// Late downgrade: a server that advertised Range support may still answer a
+	// chunk request with 200 OK. Discard the staged bytes and checkpoint, then
+	// restart as a single stream before the parallel path can commit anything.
+	if errors.Is(downloadErr, ErrRangeUnsupported) {
+		_ = writer.Discard()
+		if resumable {
+			_ = c.store.DeleteCheckpoint(opts.JobID)
+		}
+		return c.DownloadSingleStreamWithOptions(ctx, probe, opts)
+	}
+
 	if downloadErr != nil {
 		if resumable {
 			if errors.Is(downloadErr, ErrResourceChanged) {
@@ -324,13 +340,19 @@ func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *
 
 	// Invariant: Range request must return 206 Partial Content (or 200 if whole file requested as 1 chunk)
 	if resp.StatusCode != http.StatusPartialContent {
+		// If-Range revalidation takes precedence: a 200 means the entity changed,
+		// so staged bytes must never be reused.
 		if ifRange != "" && resp.StatusCode == http.StatusOK {
 			return ErrResourceChanged
 		}
 		if resp.StatusCode == http.StatusOK && chunk.Start == 0 && chunk.Remaining() == resp.ContentLength {
 			// Acceptable single chunk covering whole file
+		} else if resp.StatusCode == http.StatusOK && ifRange == "" {
+			// The server advertised Range support but ignored this request.
+			// Downgrade to a single-stream download from scratch.
+			return ErrRangeUnsupported
 		} else {
-			return fmt.Errorf("chunk %d: server returned status %d instead of 206 Partial Content", chunk.Index, resp.StatusCode)
+			return &HTTPStatusError{StatusCode: resp.StatusCode, Status: resp.Status}
 		}
 	}
 
