@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,12 +11,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/omkute/gofetch/internal/classifier"
 	"github.com/omkute/gofetch/internal/engine"
+	"github.com/omkute/gofetch/internal/state"
 	"github.com/omkute/gofetch/internal/ui"
 )
 
@@ -85,8 +89,12 @@ func runStandaloneDownload(ctx context.Context, opts standaloneOptions) error {
 		}
 	}
 
+	jobSum := sha256.Sum256([]byte(destDir + "\x00" + opts.URL))
+	jobID := hex.EncodeToString(jobSum[:])[:32]
+
 	dlOpts := engine.DownloadOptions{
 		DestDir:      destDir,
+		JobID:        jobID,
 		MaxWorkers:   chunks,
 		Sequential:   opts.Sequential,
 		RateLimiter:  limiter,
@@ -98,6 +106,10 @@ func runStandaloneDownload(ctx context.Context, opts standaloneOptions) error {
 	}
 
 	coord := engine.NewCoordinator(client)
+	if cpStore, ok := newStandaloneCheckpointStore(destDir); ok {
+		defer func() { _ = cpStore.Close() }()
+		coord = engine.NewCoordinatorWithStore(client, cpStore)
+	}
 
 	// Determine UI mode: interactive TUI vs headless vs JSON vs quiet
 	useTUI := isTerminal(os.Stdout) && !opts.Quiet && !opts.Headless && !opts.JSON
@@ -261,4 +273,23 @@ func runStandalone(opts standaloneOptions, urls []string) error {
 	}
 
 	return nil
+}
+
+// newStandaloneCheckpointStore opens the user-level checkpoint database used
+// by standalone downloads. Failure to open it is non-fatal: the download still
+// runs, just without automatic resume.
+func newStandaloneCheckpointStore(destDir string) (engine.CheckpointStore, bool) {
+	base, err := os.UserCacheDir()
+	if err != nil || base == "" {
+		base = destDir
+	}
+	dir := filepath.Join(base, "gofetch")
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return nil, false
+	}
+	store, err := state.NewBboltStore(filepath.Join(dir, "checkpoints.db"))
+	if err != nil {
+		return nil, false
+	}
+	return store, true
 }

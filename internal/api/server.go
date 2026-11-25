@@ -34,6 +34,7 @@ type Server struct {
 
 	scheduler         *queue.Scheduler
 	taskStore         *state.TaskStore
+	checkpointStore   engine.CheckpointStore
 	eventBus          *state.EventBus
 	globalRateLimiter *engine.RateLimiter
 	startTime         time.Time
@@ -114,6 +115,13 @@ func (s *Server) TaskStore() *state.TaskStore {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.taskStore
+}
+
+// SetCheckpointStore sets the store used to persist resumable chunk offsets.
+func (s *Server) SetCheckpointStore(store engine.CheckpointStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checkpointStore = store
 }
 
 // SetScheduler replaces the queue scheduler.
@@ -317,10 +325,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	server := s.httpServer
 	ts := s.taskStore
+	cpStore := s.checkpointStore
 	s.mu.Unlock()
 
 	if ts != nil {
 		_ = ts.Close()
+	}
+	if cpStore != nil {
+		_ = cpStore.Close()
 	}
 	s.eventBus.Close()
 

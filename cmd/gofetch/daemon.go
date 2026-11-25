@@ -45,6 +45,11 @@ func newDaemonCmd() *cobra.Command {
 				if store, storeErr := state.NewTaskStore(taskDB); storeErr == nil {
 					server.SetTaskStore(store)
 				}
+				// Resume checkpoints use a dedicated bbolt file so chunk offset
+				// snapshots are isolated from task metadata persistence.
+				if cpStore, cpErr := state.NewBboltStore(taskDB + ".checkpoints.db"); cpErr == nil {
+					server.SetCheckpointStore(cpStore)
+				}
 			}
 
 			// Apply rate limits

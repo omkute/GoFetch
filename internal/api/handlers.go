@@ -274,7 +274,10 @@ func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
 		})
 	}
 
-	coord := engine.NewCoordinator(client)
+	s.mu.RLock()
+	checkpointStore := s.checkpointStore
+	s.mu.RUnlock()
+	coord := engine.NewCoordinatorWithStore(client, checkpointStore)
 
 	lastBytes := int64(0)
 	lastTime := time.Now()

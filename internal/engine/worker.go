@@ -17,6 +17,11 @@ import (
 // DefaultConcurrency is the fallback worker count when not explicitly specified.
 const DefaultConcurrency = 4
 
+// ErrResourceChanged indicates an If-Range revalidation determined that the
+// remote resource changed after a download was interrupted. Staged bytes must
+// not be reused; the caller should retry from scratch.
+var ErrResourceChanged = errors.New("resource changed during download; partial data cannot be resumed")
+
 // DownloadParallel executes a concurrent, multi-chunk partitioned download.
 // If the target server lacks byte Range support, it automatically downgrades to
 // single-stream download without breaking invariant safety.
@@ -31,10 +36,44 @@ func (c *Coordinator) DownloadParallel(ctx context.Context, probe *ResourceInfo,
 // persisted checkpoints and transient error retries.
 func (c *Coordinator) DownloadResumable(ctx context.Context, jobID string, probe *ResourceInfo, destDir string, numWorkers int) (string, error) {
 	return c.DownloadWithOptions(ctx, probe, DownloadOptions{
-		DestDir:    destDir,
 		JobID:      jobID,
+		DestDir:    destDir,
 		MaxWorkers: numWorkers,
 	})
+}
+
+// revalidateResource sends an If-Range/ETag conditional request before a resume.
+// Status 206 means the entity is unchanged and staged offsets remain valid;
+// status 200 means it changed and the staged bytes must be discarded.
+func revalidateResource(ctx context.Context, client *http.Client, url, etag string, offset int64) (bool, error) {
+	if etag == "" {
+		return true, nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset))
+	req.Header.Set("If-Range", etag)
+	req.Header.Set("User-Agent", DefaultUserAgent)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	switch resp.StatusCode {
+	case http.StatusPartialContent:
+		return true, nil
+	case http.StatusOK:
+		return false, nil
+	default:
+		return false, fmt.Errorf("revalidation returned status %d", resp.StatusCode)
+	}
 }
 
 // DownloadWithOptions executes a download according to the provided DownloadOptions,
@@ -61,14 +100,43 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 
 	finalPath := filepath.Join(absDir, probe.Filename)
 	partPath := finalPath + storage.PartFileExtension
+	downloadURL := probe.FinalURL
+	if downloadURL == "" {
+		downloadURL = probe.URL
+	}
 
+	resumable := c.store != nil && opts.JobID != ""
+
+	// 1. Replay a valid checkpoint: part file must be complete in size and the
+	// entity must still match the stored ETag (If-Range revalidation).
 	var chunks []Chunk
-
-	// 1. Check if an existing checkpoint can be resumed
-	if c.store != nil && opts.JobID != "" {
+	var resumeETag string
+	if resumable {
 		if cp, getErr := c.store.GetCheckpoint(opts.JobID); getErr == nil && cp != nil {
-			if info, statErr := os.Stat(partPath); statErr == nil && info.Size() == probe.ContentLength {
-				chunks = cp.Chunks
+			valid := cp.TotalSize == probe.ContentLength
+			if valid {
+				if info, statErr := os.Stat(partPath); statErr == nil && info.Size() == probe.ContentLength {
+					probeOffset := int64(0)
+					for i := range cp.Chunks {
+						if cp.Chunks[i].Remaining() > 0 {
+							probeOffset = cp.Chunks[i].Current
+							break
+						}
+					}
+					unchanged, valErr := revalidateResource(ctx, c.client, downloadURL, cp.ETag, probeOffset)
+					if valErr == nil && unchanged {
+						chunks = cp.Chunks
+						resumeETag = cp.ETag
+					} else {
+						valid = false
+					}
+				} else {
+					valid = false
+				}
+			}
+			if !valid {
+				_ = os.Remove(partPath)
+				_ = c.store.DeleteCheckpoint(opts.JobID)
 			}
 		}
 	}
@@ -81,7 +149,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 			return "", fmt.Errorf("failed to partition download: %w", partErr)
 		}
 
-		if c.store != nil && opts.JobID != "" {
+		if resumable {
 			_ = c.store.SaveCheckpoint(&Checkpoint{
 				ID:        opts.JobID,
 				URL:       probe.FinalURL,
@@ -107,16 +175,32 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 		}
 	}()
 
-	downloadURL := probe.FinalURL
-	if downloadURL == "" {
-		downloadURL = probe.URL
+	// Progress offsets are published through a throttled, non-blocking
+	// handoff. The background consumer is the only goroutine that writes to
+	// the checkpoint store; worker goroutines never touch the DB.
+	var tracker *checkpointTracker
+	if resumable {
+		etag := probe.ETag
+		if resumeETag != "" {
+			etag = resumeETag
+		}
+		cp := &Checkpoint{
+			ID:        opts.JobID,
+			URL:       probe.FinalURL,
+			FinalPath: finalPath,
+			TotalSize: probe.ContentLength,
+			ETag:      etag,
+			Chunks:    chunks,
+			UpdatedAt: time.Now(),
+		}
+		tracker = newCheckpointTracker(c.store, cp, chunks, 0)
 	}
 
 	retryCfg := DefaultRetryConfig()
+	var downloadErr error
 
 	// 4. Execute either in sequential or parallel mode
 	if opts.Sequential {
-		// Sequential head-to-tail download (0 -> 1 -> ... -> N-1)
 		for i := range chunks {
 			chunk := &chunks[i]
 			if chunk.Completed || chunk.Remaining() <= 0 {
@@ -125,12 +209,13 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 
 			if opts.Semaphore != nil {
 				if semErr := opts.Semaphore.Acquire(ctx); semErr != nil {
-					return "", semErr
+					downloadErr = semErr
+					break
 				}
 			}
 
 			dlErr := ExecuteWithRetry(ctx, retryCfg, func() error {
-				return downloadChunk(ctx, c.client, downloadURL, chunk, writer, opts.RateLimiter, opts.ProgressFn)
+				return downloadChunk(ctx, c.client, downloadURL, chunk, writer, opts.RateLimiter, opts.ProgressFn, resumeETag, tracker)
 			})
 
 			if opts.Semaphore != nil {
@@ -138,22 +223,11 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 			}
 
 			if dlErr != nil {
-				if c.store != nil && opts.JobID != "" {
-					_ = c.store.SaveCheckpoint(&Checkpoint{
-						ID:        opts.JobID,
-						URL:       probe.FinalURL,
-						FinalPath: finalPath,
-						TotalSize: probe.ContentLength,
-						ETag:      probe.ETag,
-						Chunks:    chunks,
-						UpdatedAt: time.Now(),
-					})
-				}
-				return "", fmt.Errorf("sequential download error on chunk %d: %w", chunk.Index, dlErr)
+				downloadErr = fmt.Errorf("sequential download error on chunk %d: %w", chunk.Index, dlErr)
+				break
 			}
 		}
 	} else {
-		// Parallel concurrent download
 		g, gCtx := errgroup.WithContext(ctx)
 		for i := range chunks {
 			chunk := &chunks[i]
@@ -170,13 +244,27 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 				}
 
 				return ExecuteWithRetry(gCtx, retryCfg, func() error {
-					return downloadChunk(gCtx, c.client, downloadURL, chunk, writer, opts.RateLimiter, opts.ProgressFn)
+					return downloadChunk(gCtx, c.client, downloadURL, chunk, writer, opts.RateLimiter, opts.ProgressFn, resumeETag, tracker)
 				})
 			})
 		}
 
 		if err := g.Wait(); err != nil {
-			if c.store != nil && opts.JobID != "" {
+			downloadErr = fmt.Errorf("parallel download error: %w", err)
+		}
+	}
+
+	// Wait for all async checkpoint writes before the authoritative final save.
+	if tracker != nil {
+		tracker.stop()
+	}
+
+	if downloadErr != nil {
+		if resumable {
+			if errors.Is(downloadErr, ErrResourceChanged) {
+				_ = os.Remove(partPath)
+				_ = c.store.DeleteCheckpoint(opts.JobID)
+			} else {
 				_ = c.store.SaveCheckpoint(&Checkpoint{
 					ID:        opts.JobID,
 					URL:       probe.FinalURL,
@@ -187,8 +275,8 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 					UpdatedAt: time.Now(),
 				})
 			}
-			return "", fmt.Errorf("parallel download error: %w", err)
 		}
+		return "", downloadErr
 	}
 
 	// 5. Verify integrity on the staged file, then flush and commit it.
@@ -202,7 +290,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 	committed = true
 
 	// 6. Clean up completed checkpoint
-	if c.store != nil && opts.JobID != "" {
+	if resumable {
 		_ = c.store.DeleteCheckpoint(opts.JobID)
 	}
 
@@ -210,7 +298,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 }
 
 // downloadChunk streams an individual byte range [Current, End] directly into disk via WriteAt.
-func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *Chunk, writer *storage.FileWriter, limiter *RateLimiter, progressFn func(chunkIndex int, bytesRead int)) error {
+func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *Chunk, writer *storage.FileWriter, limiter *RateLimiter, progressFn func(chunkIndex int, bytesRead int), ifRange string, tracker *checkpointTracker) error {
 	if chunk.Completed || chunk.Remaining() <= 0 {
 		return nil
 	}
@@ -222,6 +310,9 @@ func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *
 
 	req.Header.Set("Range", chunk.RangeHeader())
 	req.Header.Set("User-Agent", DefaultUserAgent)
+	if ifRange != "" {
+		req.Header.Set("If-Range", ifRange)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -233,6 +324,9 @@ func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *
 
 	// Invariant: Range request must return 206 Partial Content (or 200 if whole file requested as 1 chunk)
 	if resp.StatusCode != http.StatusPartialContent {
+		if ifRange != "" && resp.StatusCode == http.StatusOK {
+			return ErrResourceChanged
+		}
 		if resp.StatusCode == http.StatusOK && chunk.Start == 0 && chunk.Remaining() == resp.ContentLength {
 			// Acceptable single chunk covering whole file
 		} else {
@@ -265,6 +359,10 @@ func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *
 				return fmt.Errorf("chunk %d: write error at offset %d: %w", chunk.Index, chunk.Current, writeErr)
 			}
 			chunk.Current += int64(n)
+			if tracker != nil {
+				tracker.record(chunk.Index, chunk.Current, chunk.Current > chunk.End)
+				tracker.maybePersist(time.Now())
+			}
 			if progressFn != nil {
 				progressFn(chunk.Index, n)
 			}
@@ -280,6 +378,9 @@ func downloadChunk(ctx context.Context, client *http.Client, url string, chunk *
 
 	if chunk.Current > chunk.End {
 		chunk.Completed = true
+		if tracker != nil {
+			tracker.record(chunk.Index, chunk.Current, true)
+		}
 	}
 
 	return nil
