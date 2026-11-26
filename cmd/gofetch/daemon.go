@@ -51,6 +51,7 @@ func newDaemonCmd() *cobra.Command {
 				UserAgent:            cfg.Network.UserAgent,
 				ConnectionTimeoutSec: cfg.Network.ConnectionTimeout,
 				EnableWebGUI:         cfg.Daemon.EnableWebGUI,
+				PostgresDSN:          cfg.Network.PostgresDSN,
 			}); err != nil {
 				return fmt.Errorf("configuration error: %w", err)
 			}

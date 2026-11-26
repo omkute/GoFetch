@@ -4,11 +4,11 @@ Operational guide and rules of engagement for developers and AI agents working o
 
 ## 1. Tech Stack & Required Local Tools
 
-- **Core Runtime**: Go 1.22+ (toolchain, standard library: `net/http`, `os`, `sync/atomic`, `io`).
+- **Core Runtime**: Go 1.26+ (toolchain, standard library: `net/http`, `os`, `sync/atomic`, `io`).
 - **CLI & TUI**: `github.com/spf13/cobra`, `github.com/charmbracelet/bubbletea`, `lipgloss`.
 - **State & Router**: `go.etcd.io/bbolt` (local ACID checkpoints), `github.com/go-chi/chi/v5` (daemon router).
 - **Async Persistence**: `github.com/jackc/pgx/v5` (isolated off the hot path).
-- **Required Local Tools**: `go` (1.22+), `golangci-lint` (v1.55+), `make`, `git`, `curl`.
+- **Required Local Tools**: `go` (1.26+), `golangci-lint` (v1.55+), `make`, `git`, `curl`.
 
 ## 2. Essential Commands
 

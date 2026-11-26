@@ -19,6 +19,9 @@ type DaemonConfig struct {
 	UserAgent            string
 	ConnectionTimeoutSec int
 	EnableWebGUI         bool
+	// PostgresDSN is optional; an empty value leaves telemetry disabled and
+	// avoids creating a pool or attempting any database connection.
+	PostgresDSN string
 }
 
 // SetDaemonConfig installs the daemon's configuration defaults. Category path

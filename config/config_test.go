@@ -61,6 +61,40 @@ func TestLoadConfig_Roundtrip(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_PostgresDSN(t *testing.T) {
+	if got := DefaultConfig().Network.PostgresDSN; got != "" {
+		t.Errorf("default postgres_dsn = %q, want empty", got)
+	}
+
+	const dsn = "postgres://gofetch:secret@127.0.0.1:5432/gofetch"
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "network:\n  postgres_dsn: \"" + dsn + "\"\n"
+	if err := os.WriteFile(path, []byte(yaml), 0600); err != nil {
+		t.Fatalf("failed writing config: %v", err)
+	}
+
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("failed loading config: %v", err)
+	}
+	if loaded.Network.PostgresDSN != dsn {
+		t.Errorf("postgres_dsn = %q, want %q", loaded.Network.PostgresDSN, dsn)
+	}
+
+	// The same value must survive Save/Load, so the field has a stable YAML key.
+	savedPath := filepath.Join(t.TempDir(), "saved.yaml")
+	if err := Save(loaded, savedPath); err != nil {
+		t.Fatalf("failed saving config: %v", err)
+	}
+	reloaded, err := LoadConfig(savedPath)
+	if err != nil {
+		t.Fatalf("failed reloading config: %v", err)
+	}
+	if reloaded.Network.PostgresDSN != dsn {
+		t.Errorf("reloaded postgres_dsn = %q, want %q", reloaded.Network.PostgresDSN, dsn)
+	}
+}
+
 func TestLoadConfig_UnknownKeysRejected(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 

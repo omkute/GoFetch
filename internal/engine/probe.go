@@ -189,7 +189,7 @@ func parseResponseMetadata(resp *http.Response, originalURL string) *ResourceInf
 		ContentType:   resp.Header.Get("Content-Type"),
 		AcceptRanges:  acceptRanges,
 		ETag:          resp.Header.Get("ETag"),
-		LastModified:  resp.Header.Get("LastModified"),
+		LastModified:  resp.Header.Get("Last-Modified"),
 	}
 }
 

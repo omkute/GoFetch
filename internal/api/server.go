@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/omkute/gofetch/internal/engine"
 	"github.com/omkute/gofetch/internal/queue"
 	"github.com/omkute/gofetch/internal/state"
@@ -18,6 +19,13 @@ const DefaultAddr = "127.0.0.1:12701"
 
 // persistBufferSize bounds the asynchronous progress-persistence handoff.
 const persistBufferSize = 256
+
+// Optional PostgreSQL telemetry batching. All inserts run in the consumer's
+// background goroutine, never from a chunk transfer loop.
+const (
+	postgresTelemetryBatchSize = 50
+	postgresTelemetryFlushFreq = time.Second
+)
 
 // Server represents the GoFetch loopback HTTP daemon engine.
 type Server struct {
@@ -46,6 +54,10 @@ type Server struct {
 	persistCancel context.CancelFunc
 	persistDone   chan struct{}
 	persistOnce   sync.Once
+
+	// Optional PostgreSQL telemetry; created only when a DSN is configured.
+	telemetryPool     *pgxpool.Pool
+	telemetryConsumer *state.PostgresTelemetryConsumer
 }
 
 // defaultStreamingDialTimeout bounds TCP connection establishment for the
@@ -192,6 +204,47 @@ func (s *Server) EventBus() *state.EventBus {
 	return s.eventBus
 }
 
+// startPostgresTelemetry creates and starts the optional PostgreSQL telemetry
+// consumer. An empty DSN is a strict no-op: no pool is created and no database
+// connection is attempted. The consumer subscribes to the event bus and flushes
+// from its own goroutine, so no DB work is added to the chunk transfer path.
+func (s *Server) startPostgresTelemetry() error {
+	dsn := s.daemonConfig().PostgresDSN
+	if dsn == "" {
+		return nil
+	}
+
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		return fmt.Errorf("invalid postgres_dsn: %w", err)
+	}
+
+	consumer := state.NewPostgresTelemetryConsumer(s.eventBus, pool, postgresTelemetryBatchSize, postgresTelemetryFlushFreq)
+	consumer.Start(context.Background())
+
+	s.mu.Lock()
+	s.telemetryPool = pool
+	s.telemetryConsumer = consumer
+	s.mu.Unlock()
+	return nil
+}
+
+// stopPostgresTelemetry stops the consumer (flushing any pending events) and
+// closes its pool. It is safe to call even when telemetry was never enabled.
+func (s *Server) stopPostgresTelemetry() {
+	s.mu.Lock()
+	consumer, pool := s.telemetryConsumer, s.telemetryPool
+	s.telemetryConsumer, s.telemetryPool = nil, nil
+	s.mu.Unlock()
+
+	if consumer != nil {
+		consumer.Stop()
+	}
+	if pool != nil {
+		pool.Close()
+	}
+}
+
 // GlobalRateLimiter returns the engine's global bandwidth limiter.
 func (s *Server) GlobalRateLimiter() *engine.RateLimiter {
 	s.mu.RLock()
@@ -317,6 +370,10 @@ func (s *Server) Ready() <-chan struct{} {
 
 // Start begins listening on the configured address and serves incoming HTTP requests.
 func (s *Server) Start() error {
+	if err := s.startPostgresTelemetry(); err != nil {
+		return err
+	}
+
 	s.scheduler.Start(context.Background())
 	s.loadPersistedTasks()
 
@@ -334,6 +391,7 @@ func (s *Server) Start() error {
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		s.mu.Unlock()
+		s.stopPostgresTelemetry()
 		return fmt.Errorf("failed to bind to %s: %w", s.addr, err)
 	}
 
@@ -347,6 +405,7 @@ func (s *Server) Start() error {
 	s.mu.Unlock()
 
 	if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+		s.stopPostgresTelemetry()
 		return fmt.Errorf("http server error: %w", err)
 	}
 	return nil
@@ -385,6 +444,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if cpStore != nil {
 		_ = cpStore.Close()
 	}
+	// Stop the async telemetry consumer before closing its event bus.
+	s.stopPostgresTelemetry()
 	s.eventBus.Close()
 
 	if server == nil {

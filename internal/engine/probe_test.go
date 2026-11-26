@@ -120,6 +120,50 @@ func TestProbe_HeadSuccess_AcceptRanges(t *testing.T) {
 	}
 }
 
+func TestProbe_LastModifiedHeaderPreserved(t *testing.T) {
+	const lastModified = "Wed, 21 Oct 2015 07:28:00 GMT"
+
+	for _, tc := range []struct {
+		name       string
+		rejectHEAD bool
+	}{
+		{name: "HEAD response"},
+		{name: "GET fallback response", rejectHEAD: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mockClient := newMockClient(func(req *http.Request) (*http.Response, error) {
+				if tc.rejectHEAD && req.Method == http.MethodHead {
+					return &http.Response{
+						StatusCode: http.StatusMethodNotAllowed,
+						Header:     make(http.Header),
+						Body:       io.NopCloser(bytes.NewReader(nil)),
+						Request:    req,
+					}, nil
+				}
+				header := make(http.Header)
+				header.Set("Last-Modified", lastModified)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     header,
+					Body:       io.NopCloser(bytes.NewReader(nil)),
+					Request:    req,
+				}, nil
+			})
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			info, err := engine.Probe(ctx, mockClient, "http://mock.local/resource")
+			if err != nil {
+				t.Fatalf("unexpected probe error: %v", err)
+			}
+			if info.LastModified != lastModified {
+				t.Errorf("LastModified = %q, want %q", info.LastModified, lastModified)
+			}
+		})
+	}
+}
+
 func TestProbe_PathTraversalInContentDisposition(t *testing.T) {
 	mockClient := newMockClient(func(req *http.Request) (*http.Response, error) {
 		header := make(http.Header)

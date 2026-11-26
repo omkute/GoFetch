@@ -26,6 +26,8 @@ type NetworkConfig struct {
 	UserAgent          string `yaml:"user_agent"`
 	ConnectionTimeout  int    `yaml:"connection_timeout_sec"`
 	GlobalRateLimitBps int64  `yaml:"global_rate_limit_bps"`
+	// PostgresDSN is optional; an empty value disables PostgreSQL telemetry.
+	PostgresDSN string `yaml:"postgres_dsn"`
 }
 
 // DaemonConfig controls loopback IPC, embedded GUI, and task persistence.

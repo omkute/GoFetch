@@ -79,7 +79,7 @@ GoFetch is a cross-platform download accelerator designed for extreme network re
 ## 📦 Installation & Build
 
 ### Prerequisites
-- **Go 1.22+**
+- **Go 1.26+**
 - **Make** (optional, standard POSIX)
 
 ### Compiling from Source
@@ -194,6 +194,7 @@ network:
   user_agent: "GoFetch/2.0"
   connection_timeout_sec: 30
   global_rate_limit_bps: 20971520 # 20 MB/s
+  postgres_dsn: ""                # optional PostgreSQL telemetry DSN; empty disables it
 daemon:
   listen_addr: "127.0.0.1:12701"
   enable_web_gui: true
@@ -203,6 +204,8 @@ daemon:
 Use absolute paths in the YAML file; the loader does not expand `~`. When no config file is found, defaults for the download directory and task DB are derived from the current user's home directory.
 
 Paths in `storage.category_paths` must be relative folder names; absolute paths, `..` segments, and null bytes are rejected. Per-category folder names may be nested (for example `Media/Videos`), and categories not listed use their built-in folder names.
+
+**Optional PostgreSQL telemetry:** set `network.postgres_dsn` (for example `postgres://user:password@127.0.0.1:5432/gofetch`) to persist download events. The daemon creates a `pgxpool` and starts an asynchronous telemetry consumer at startup, then stops it and closes the pool on shutdown. With an empty DSN no pool is created and no database connection is attempted. All database writes happen off the chunk transfer hot path.
 
 **Precedence:** an explicit flag or request field wins over the config file, which wins over the built-in default. For example `gofetch daemon -j 1` overrides `concurrency.max_concurrent_downloads`, while a `POST /api/v1/downloads` body with `max_chunks`, `destination_dir`, `auto_classify`, `no_organize`, or `rate_limit` overrides the corresponding config default. Configuration currently applies to the daemon path; standalone/root `--config` is not wired yet.
 
