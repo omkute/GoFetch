@@ -2,12 +2,7 @@ package integration_test
 
 import (
 	"bytes"
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,203 +20,166 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func TestIntegration_DaemonRESTAPILifecycle(t *testing.T) {
-	server := api.NewServer("127.0.0.1:12701")
-	router := server.Router()
+	tempDir := t.TempDir()
+	const fileName = "lifecycle.bin"
+	payload := bytes.Repeat([]byte("GoFetch loopback lifecycle payload! "), 16*1024)
 
-	// 1. Submit download via POST /api/v1/downloads
-	payload := api.CreateDownloadRequest{
-		URL:            "https://releases.ubuntu.com/24.04/ubuntu.iso",
-		DestinationDir: "/tmp",
+	// A real range-capable origin and a real daemon listener: every request
+	// below goes over loopback HTTP, and the scheduler actually runs the job.
+	// The origin holds back part of each range so the in-flight job can be
+	// observed and paused deterministically.
+	origin := newGatedRangeOrigin(t, fileName, payload)
+	daemon := startTestDaemon(t, nil)
+
+	// 1. Submit download via POST /api/v1/downloads.
+	var created api.DownloadResponse
+	if code := daemon.postJSON(t, "/api/v1/downloads", api.CreateDownloadRequest{
+		URL:            origin.URL + "/" + fileName,
+		DestinationDir: tempDir,
 		Priority:       "high",
-		MaxChunks:      8,
+		MaxChunks:      4,
+		NoOrganize:     true,
+	}, &created); code != http.StatusAccepted {
+		t.Fatalf("POST /api/v1/downloads: expected 202 Accepted, got %d", code)
 	}
-	body, _ := json.Marshal(payload)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/downloads", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("expected 202 Accepted, got %d: %s", w.Code, w.Body.String())
+	if created.ID == "" {
+		t.Fatal("expected a non-empty task ID from enqueue")
 	}
+	taskID := created.ID
 
-	var createResp api.DownloadResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &createResp); err != nil {
-		t.Fatalf("failed decoding create response: %v", err)
+	// 2. List endpoint reports the enqueued task.
+	var list api.ListDownloadsResponse
+	if code := daemon.getJSON(t, "/api/v1/downloads", &list); code != http.StatusOK {
+		t.Fatalf("GET /api/v1/downloads: expected 200 OK, got %d", code)
 	}
-
-	taskID := createResp.ID
-	if taskID == "" {
-		t.Fatal("expected non-empty task ID")
+	if list.Total != 1 || len(list.Items) != 1 || list.Items[0].ID != taskID {
+		t.Fatalf("expected exactly 1 listed task with ID %s, got %+v", taskID, list)
 	}
 
-	// 2. Query list via GET /api/v1/downloads
-	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/downloads", nil)
-	listW := httptest.NewRecorder()
-	router.ServeHTTP(listW, listReq)
-
-	if listW.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK on list, got %d", listW.Code)
+	// 3. Detail endpoint reports real progress and per-chunk state while the
+	// origin is still serving byte ranges. Wait for a real chunk request first
+	// so this cannot miss the brief in-flight window.
+	select {
+	case <-origin.chunkRequested:
+	case <-time.After(integrationPollLimit):
+		t.Fatal("origin never received a chunk request")
+	}
+	detail := daemon.waitForDetail(t, taskID, func(d api.DownloadDetailResponse) bool {
+		return d.Status == "downloading" && d.DownloadedBytes > 0 && len(d.Chunks) > 0
+	})
+	if detail.TotalBytes != int64(len(payload)) {
+		t.Fatalf("detail total bytes = %d, want %d", detail.TotalBytes, len(payload))
 	}
 
-	var listResp api.ListDownloadsResponse
-	if err := json.Unmarshal(listW.Body.Bytes(), &listResp); err != nil {
-		t.Fatalf("failed decoding list response: %v", err)
+	// 4. Pause halts the running transfer.
+	if code := daemon.postJSON(t, "/api/v1/downloads/"+taskID+"/pause", nil, nil); code != http.StatusOK {
+		t.Fatalf("POST pause: expected 200 OK, got %d", code)
 	}
-	if listResp.Total != 1 || listResp.Items[0].ID != taskID {
-		t.Fatalf("expected 1 task with id %s, got %+v", taskID, listResp)
+	paused := daemon.waitForDetail(t, taskID, func(d api.DownloadDetailResponse) bool {
+		return d.Status == "paused"
+	})
+	if paused.DownloadedBytes <= 0 {
+		t.Errorf("paused task should retain progress, got %d bytes", paused.DownloadedBytes)
 	}
+	// Release any blocked origin handlers now; the paused download must not
+	// continue simply because bytes became available.
+	origin.unblock()
 
-	// 3. Pause via POST /api/v1/downloads/{id}/pause
-	pauseReq := httptest.NewRequest(http.MethodPost, "/api/v1/downloads/"+taskID+"/pause", nil)
-	pauseW := httptest.NewRecorder()
-	router.ServeHTTP(pauseW, pauseReq)
-
-	if pauseW.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK on pause, got %d", pauseW.Code)
+	// 5. Resume returns the task to downloading and it completes with real
+	// bytes on disk.
+	if code := daemon.postJSON(t, "/api/v1/downloads/"+taskID+"/resume", nil, nil); code != http.StatusOK {
+		t.Fatalf("POST resume: expected 200 OK, got %d", code)
 	}
+	daemon.waitForDetail(t, taskID, func(d api.DownloadDetailResponse) bool {
+		return (d.Status == "downloading" || d.Status == "completed") && d.DownloadedBytes > 0
+	})
 
-	// 4. Resume via POST /api/v1/downloads/{id}/resume
-	resumeReq := httptest.NewRequest(http.MethodPost, "/api/v1/downloads/"+taskID+"/resume", nil)
-	resumeW := httptest.NewRecorder()
-	router.ServeHTTP(resumeW, resumeReq)
-
-	if resumeW.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK on resume, got %d", resumeW.Code)
+	completed := daemon.waitForDetail(t, taskID, func(d api.DownloadDetailResponse) bool {
+		return d.Status == "completed" && d.DownloadedBytes == int64(len(payload))
+	})
+	if len(completed.Chunks) == 0 {
+		t.Fatal("completed detail must include per-chunk information")
 	}
-
-	// 5. Query detailed status via GET /api/v1/downloads/{id}
-	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/downloads/"+taskID, nil)
-	getW := httptest.NewRecorder()
-	router.ServeHTTP(getW, getReq)
-
-	if getW.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK on detail, got %d", getW.Code)
-	}
-
-	var detailResp api.DownloadDetailResponse
-	if err := json.Unmarshal(getW.Body.Bytes(), &detailResp); err != nil {
-		t.Fatalf("failed decoding detail response: %v", err)
-	}
-	if detailResp.Status != "resumed" && detailResp.Status != "downloading" {
-		t.Errorf("expected resumed or downloading status, got %s", detailResp.Status)
+	for i, chunk := range completed.Chunks {
+		if chunk.ChunkIndex != i || chunk.StartByte < 0 || chunk.EndByte < chunk.StartByte ||
+			chunk.EndByte >= int64(len(payload)) || !chunk.Completed {
+			t.Errorf("unexpected chunk %d: %+v", i, chunk)
+		}
 	}
 
-	// 6. Delete via DELETE /api/v1/downloads/{id}
-	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/downloads/"+taskID, nil)
-	delW := httptest.NewRecorder()
-	router.ServeHTTP(delW, delReq)
-
-	if delW.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK on delete, got %d", delW.Code)
+	finalPath := filepath.Join(tempDir, fileName)
+	stored, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatalf("expected committed file %q on disk: %v", finalPath, err)
+	}
+	if !bytes.Equal(stored, payload) {
+		t.Fatalf("committed file has %d bytes, want the exact %d-byte payload", len(stored), len(payload))
+	}
+	if _, statErr := os.Stat(finalPath + storage.PartFileExtension); !os.IsNotExist(statErr) {
+		t.Errorf("staging file should be removed after commit: %v", statErr)
 	}
 
-	// 7. Verify 404
-	checkReq := httptest.NewRequest(http.MethodGet, "/api/v1/downloads/"+taskID, nil)
-	checkW := httptest.NewRecorder()
-	router.ServeHTTP(checkW, checkReq)
-
-	if checkW.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 Not Found after delete, got %d", checkW.Code)
+	// 6. Cancel/delete removes the task from the daemon and from disk.
+	if code := daemon.jsonRequest(t, http.MethodDelete, "/api/v1/downloads/"+taskID+"?delete_files=true", nil, nil); code != http.StatusOK {
+		t.Fatalf("DELETE download: expected 200 OK, got %d", code)
+	}
+	var afterDelete api.ListDownloadsResponse
+	if code := daemon.getJSON(t, "/api/v1/downloads", &afterDelete); code != http.StatusOK {
+		t.Fatalf("GET /api/v1/downloads after delete: expected 200 OK, got %d", code)
+	}
+	if afterDelete.Total != 0 || len(afterDelete.Items) != 0 {
+		t.Fatalf("deleted task still listed: %+v", afterDelete)
+	}
+	if code := daemon.getJSON(t, "/api/v1/downloads/"+taskID, nil); code != http.StatusNotFound {
+		t.Fatalf("GET deleted task: expected 404 Not Found, got %d", code)
+	}
+	if _, statErr := os.Stat(finalPath); !os.IsNotExist(statErr) {
+		t.Errorf("delete_files=true should remove %q: %v", finalPath, statErr)
 	}
 }
 
 func TestIntegration_DaemonChecksumVerification(t *testing.T) {
 	tempDir := t.TempDir()
-	server := api.NewServer("127.0.0.1:0")
-	router := server.Router()
-
+	const fileName = "data.bin"
 	content := []byte("Daemon checksum validation content stream!")
-	server.SetClient(&http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			h := make(http.Header)
-			h.Set("Accept-Ranges", "bytes")
-			h.Set("Content-Length", fmt.Sprintf("%d", len(content)))
-			if req.Method == http.MethodHead {
-				return &http.Response{
-					StatusCode: http.StatusOK,
-					Header:     h,
-					Body:       io.NopCloser(bytes.NewReader(nil)),
-				}, nil
-			}
-			rangeHeader := req.Header.Get("Range")
-			if rangeHeader != "" {
-				var start, end int64
-				_, err := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
-				if err == nil && start >= 0 && end < int64(len(content)) && start <= end {
-					slice := content[start : end+1]
-					h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(content)))
-					h.Set("Content-Length", fmt.Sprintf("%d", len(slice)))
-					return &http.Response{
-						StatusCode: http.StatusPartialContent,
-						Header:     h,
-						Body:       io.NopCloser(bytes.NewReader(slice)),
-					}, nil
-				}
-			}
 
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     h,
-				Body:       io.NopCloser(bytes.NewReader(content)),
-			}, nil
-		}),
-	})
-	server.Scheduler().Start(context.Background())
-	defer server.Scheduler().Stop()
+	origin := newRangeOrigin(t, fileName, content)
+	daemon := startTestDaemon(t, nil)
 
-	// Enqueue with intentionally incorrect checksum
-	reqPayload := api.CreateDownloadRequest{
-		URL:            "http://mock.internal/data.bin",
+	// Enqueue with an intentionally incorrect checksum.
+	var created api.DownloadResponse
+	if code := daemon.postJSON(t, "/api/v1/downloads", api.CreateDownloadRequest{
+		URL:            origin.URL + "/" + fileName,
 		DestinationDir: tempDir,
 		Checksum:       "wronghash000000000000000000000000000000000000000000000000000000",
 		ChecksumAlgo:   "sha256",
 		NoOrganize:     true,
-	}
-	body, _ := json.Marshal(reqPayload)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/downloads", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("expected 202 Accepted, got %d: %s", w.Code, w.Body.String())
+	}, &created); code != http.StatusAccepted {
+		t.Fatalf("POST /api/v1/downloads: expected 202 Accepted, got %d", code)
 	}
 
-	var resp api.DownloadResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed unmarshaling response: %v", err)
-	}
-
-	// Wait briefly for worker to probe, download, and fail checksum verification
-	var detail api.DownloadDetailResponse
-	for i := 0; i < 20; i++ {
-		time.Sleep(50 * time.Millisecond)
-		detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/downloads/"+resp.ID, nil)
-		detailW := httptest.NewRecorder()
-		router.ServeHTTP(detailW, detailReq)
-		if detailW.Code == http.StatusOK {
-			_ = json.Unmarshal(detailW.Body.Bytes(), &detail)
-			if detail.Status == "failed" {
-				break
-			}
-		}
-	}
-
-	if detail.Status != "failed" {
-		t.Fatalf("expected download status 'failed' due to checksum mismatch, got %s", detail.Status)
-	}
+	detail := daemon.waitForDetail(t, created.ID, func(d api.DownloadDetailResponse) bool {
+		return d.Status == "failed"
+	})
 	if !strings.Contains(detail.Error, "checksum mismatch") {
 		t.Errorf("expected checksum mismatch error, got: %s", detail.Error)
 	}
 
-	// A checksum mismatch must never produce a final file; the staged part
-	// file must remain on disk for inspection/resumption.
-	finalPath := filepath.Join(tempDir, "data.bin")
+	// A checksum mismatch must never commit the corrupt bytes to the final
+	// destination: no os.Rename should have produced this path.
+	finalPath := filepath.Join(tempDir, fileName)
 	if _, statErr := os.Stat(finalPath); !os.IsNotExist(statErr) {
-		t.Fatalf("checksum mismatch must not create final file %q, stat error: %v", finalPath, statErr)
+		t.Fatalf("checksum mismatch must never create final file %q, stat error: %v", finalPath, statErr)
 	}
 	partPath := finalPath + storage.PartFileExtension
 	if _, statErr := os.Stat(partPath); statErr != nil {
 		t.Fatalf("checksum mismatch must preserve staged part file %q: %v", partPath, statErr)
+	}
+	staged, err := os.ReadFile(partPath)
+	if err != nil {
+		t.Fatalf("read staged part file %q: %v", partPath, err)
+	}
+	if !bytes.Equal(staged, content) {
+		t.Fatalf("staged file holds %d bytes, want the %d-byte source", len(staged), len(content))
 	}
 }
