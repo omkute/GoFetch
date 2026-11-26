@@ -64,7 +64,7 @@ func main() {
 		},
 		{
 			filename:    "unknown.custom",
-			description: "Unrecognized custom format (classified as Miscellaneous)",
+			description: "Unrecognized custom format (classified as Others)",
 			data:        []byte("some random arbitrary payload"),
 		},
 	}
@@ -100,8 +100,7 @@ func main() {
 		classifier.CategoryArchives,
 		classifier.CategoryAudio,
 		classifier.CategorySoftware,
-		classifier.CategoryImages,
-		classifier.CategoryMiscellaneous,
+		classifier.CategoryMiscellaneous, // "Others" (images fall through here too)
 	}
 
 	for _, cat := range categories {

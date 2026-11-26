@@ -134,8 +134,7 @@
       Documents: 0,
       Archives: 0,
       Software: 0,
-      Images: 0,
-      Miscellaneous: 0,
+      Others: 0,
     };
 
     state.tasks.forEach((t) => {
@@ -147,7 +146,7 @@
       if (t.category && catCounts[t.category] !== undefined) {
         catCounts[t.category]++;
       } else {
-        catCounts["Miscellaneous"]++;
+        catCounts["Others"]++;
       }
     });
 
@@ -177,8 +176,7 @@
     document.getElementById("cat-docs").textContent = catCounts.Documents;
     document.getElementById("cat-archives").textContent = catCounts.Archives;
     document.getElementById("cat-software").textContent = catCounts.Software;
-    document.getElementById("cat-images").textContent = catCounts.Images;
-    document.getElementById("cat-misc").textContent = catCounts.Miscellaneous;
+    document.getElementById("cat-others").textContent = catCounts.Others;
 
     renderTasksTable();
     if (state.selectedTaskId) refreshDetail(false);
@@ -189,7 +187,7 @@
     const filtered = state.tasks.filter((t) => {
       if (state.statusFilter !== "all" && t.status !== state.statusFilter) return false;
       if (state.categoryFilter !== "all") {
-        if (state.categoryFilter === "Miscellaneous" && !t.category) return true;
+        if (state.categoryFilter === "Others" && !t.category) return true;
         if (t.category !== state.categoryFilter) return false;
       }
       return true;

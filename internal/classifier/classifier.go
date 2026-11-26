@@ -55,8 +55,6 @@ func (c *Classifier) ClassifyFile(filePath string) (Category, error) {
 			return CategoryVideos, nil
 		case strings.HasPrefix(mimeType, "audio/"):
 			return CategoryAudio, nil
-		case strings.HasPrefix(mimeType, "image/"):
-			return CategoryImages, nil
 		case mimeType == "application/pdf":
 			return CategoryDocuments, nil
 		case mimeType == "application/zip", mimeType == "application/x-gzip":

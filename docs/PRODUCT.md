@@ -89,7 +89,7 @@
 * **Embedded Zero-Dependency Web GUI**: Self-contained SPA embedded directly into the binary via `embed.FS` and served on `http://127.0.0.1:12701/`.
 * **Desktop Browser Opener**: `gofetch gui` (and aliases `web`, `dashboard`) auto-launches the user's default browser cross-platform (macOS, Linux, Windows).
 * **Real-Time Bandwidth Visualization**: Live 60-second time-series speed graph rendered on HTML5 Canvas.
-* **Category Drawer & Filter Tabs**: Granular filtering by category (Videos, Audio, Documents, Archives, Software, Images, Others) and lifecycle status (Active, Queued, Paused, Completed, Failed).
+* **Category Drawer & Filter Tabs**: Granular filtering by category (Videos, Audio, Documents, Archives, Software, Others) and lifecycle status (Active, Queued, Paused, Completed, Failed).
 * **Global Controls**: Dynamic global bandwidth throttle dropdown, Pause All, and Resume All buttons.
 
 ### Bandwidth Limiting & Batch Processing

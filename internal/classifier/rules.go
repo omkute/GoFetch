@@ -18,12 +18,11 @@ const (
 	CategoryAudio Category = "Audio"
 	// CategoryArchives stores compressed containers (zip, tar, 7z, rar, etc.).
 	CategoryArchives Category = "Archives"
-	// CategorySoftware stores executables, packages, and images (exe, dmg, deb, elf, etc.).
+	// CategorySoftware stores executables, packages, and disk images (exe, dmg, deb, elf, etc.).
 	CategorySoftware Category = "Software"
-	// CategoryImages stores raster and vector graphics (png, jpg, gif, webp, etc.).
-	CategoryImages Category = "Images"
-	// CategoryMiscellaneous is the fallback directory for uncategorized formats.
-	CategoryMiscellaneous Category = "Miscellaneous"
+	// CategoryMiscellaneous is the fallback directory ("Others") for unmatched
+	// files, including images: images are not a separate category.
+	CategoryMiscellaneous Category = "Others"
 )
 
 // magicRule checks if buffer matches a specific byte signature.
@@ -38,27 +37,6 @@ var magicRules = []magicRule{
 		category: CategoryDocuments,
 		match: func(b []byte) bool {
 			return len(b) >= 5 && bytes.HasPrefix(b, []byte("%PDF-"))
-		},
-	},
-	// PNG (\x89PNG\r\n\x1a\n)
-	{
-		category: CategoryImages,
-		match: func(b []byte) bool {
-			return len(b) >= 8 && bytes.HasPrefix(b, []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a})
-		},
-	},
-	// JPEG (\xff\xd8\xff)
-	{
-		category: CategoryImages,
-		match: func(b []byte) bool {
-			return len(b) >= 3 && bytes.HasPrefix(b, []byte{0xff, 0xd8, 0xff})
-		},
-	},
-	// GIF (GIF87a or GIF89a)
-	{
-		category: CategoryImages,
-		match: func(b []byte) bool {
-			return len(b) >= 6 && (bytes.HasPrefix(b, []byte("GIF87a")) || bytes.HasPrefix(b, []byte("GIF89a")))
 		},
 	},
 	// ZIP (PK\x03\x04)
@@ -206,19 +184,11 @@ var extensionCategories = map[string]Category{
 	".rpm":      CategorySoftware,
 	".appimage": CategorySoftware,
 	".apk":      CategorySoftware,
-	// Images
-	".png":  CategoryImages,
-	".jpg":  CategoryImages,
-	".jpeg": CategoryImages,
-	".gif":  CategoryImages,
-	".webp": CategoryImages,
-	".bmp":  CategoryImages,
-	".svg":  CategoryImages,
-	".ico":  CategoryImages,
 }
 
 // MatchExtension inspects file extension (including multi-part like .tar.gz)
-// and returns the mapped Category or CategoryMiscellaneous.
+// and returns the mapped Category or CategoryMiscellaneous ("Others"). Image
+// extensions are deliberately unmapped and therefore fall through to Others.
 func MatchExtension(filename string) Category {
 	lower := strings.ToLower(filename)
 	if strings.HasSuffix(lower, ".tar.gz") {

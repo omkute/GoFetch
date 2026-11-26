@@ -133,6 +133,44 @@ func TestRouter_DisguisedFileRoute(t *testing.T) {
 	}
 }
 
+func TestRouter_UnknownAndImageFilesRouteToOthers(t *testing.T) {
+	testCases := []struct {
+		filename string
+		content  []byte
+	}{
+		{"unknown.bin", []byte("opaque payload with no known signature")},
+		{"photo.png", []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00}},
+	}
+
+	tempDir := t.TempDir()
+	router := classifier.NewRouter(tempDir)
+
+	for _, tc := range testCases {
+		t.Run(tc.filename, func(t *testing.T) {
+			sourceFile := filepath.Join(tempDir, tc.filename)
+			if err := os.WriteFile(sourceFile, tc.content, 0600); err != nil {
+				t.Fatalf("failed to write source file: %v", err)
+			}
+
+			destPath, err := router.Route(sourceFile)
+			if err != nil {
+				t.Fatalf("Route failed: %v", err)
+			}
+
+			expectedPath := filepath.Join(tempDir, "Others", tc.filename)
+			if destPath != expectedPath {
+				t.Fatalf("expected destPath %q, got %q", expectedPath, destPath)
+			}
+			if _, err := os.Stat(expectedPath); err != nil {
+				t.Fatalf("expected file to exist in Others directory: %v", err)
+			}
+			if _, err := os.Stat(sourceFile); !os.IsNotExist(err) {
+				t.Fatalf("source file %q still exists after routing", sourceFile)
+			}
+		})
+	}
+}
+
 func TestRouter_NameCollisionAvoidance(t *testing.T) {
 	tempDir := t.TempDir()
 	docsDir := filepath.Join(tempDir, string(classifier.CategoryDocuments))

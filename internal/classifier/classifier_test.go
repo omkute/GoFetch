@@ -22,16 +22,22 @@ func TestClassify_MagicBytesDetection(t *testing.T) {
 			expectedCategory: classifier.CategoryDocuments,
 		},
 		{
-			name:             "PNG image with .bin extension",
+			name:             "PNG image falls through to Others",
 			filename:         "screenshot.bin",
 			magicBytes:       []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00},
-			expectedCategory: classifier.CategoryImages,
+			expectedCategory: classifier.CategoryMiscellaneous,
 		},
 		{
-			name:             "JPEG image with .tmp extension",
+			name:             "JPEG image falls through to Others",
 			filename:         "photo.tmp",
 			magicBytes:       []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46},
-			expectedCategory: classifier.CategoryImages,
+			expectedCategory: classifier.CategoryMiscellaneous,
+		},
+		{
+			name:             "unknown binary payload lands in Others",
+			filename:         "opaque.bin",
+			magicBytes:       []byte{0x00, 0x01, 0x02, 0x03, 0xde, 0xad, 0xbe, 0xef},
+			expectedCategory: classifier.CategoryMiscellaneous,
 		},
 		{
 			name:             "ZIP archive with .data extension",
@@ -112,6 +118,10 @@ func TestClassify_ExtensionFallback(t *testing.T) {
 		{"app.dmg", classifier.CategorySoftware},
 		{"binary.deb", classifier.CategorySoftware},
 		{"random.xyz123", classifier.CategoryMiscellaneous},
+		{"unknown.bin", classifier.CategoryMiscellaneous},
+		{"picture.png", classifier.CategoryMiscellaneous},
+		{"photo.jpg", classifier.CategoryMiscellaneous},
+		{"vector.svg", classifier.CategoryMiscellaneous},
 	}
 
 	tempDir := t.TempDir()
