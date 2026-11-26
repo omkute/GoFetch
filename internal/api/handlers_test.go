@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -137,6 +138,94 @@ func TestHandler_DownloadLifecycle(t *testing.T) {
 
 	if checkW.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 Not Found after deletion, got %d", checkW.Code)
+	}
+}
+
+// A single-stream transfer must expose exactly one chunk row spanning the
+// whole file, with downloaded_bytes reaching the full range. Before the fix
+// the API seeded N partitions while only chunk 0 received progress.
+func TestHandler_ChunkDetailsAfterSingleStreamDownload(t *testing.T) {
+	payload := bytes.Repeat([]byte("GoFetch single stream payload! "), 16*1024)
+
+	// Origin explicitly lacks Range support, so the engine never partitions.
+	fileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Accept-Ranges", "none")
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		w.Header().Set("Content-Disposition", `attachment; filename="single.bin"`)
+		w.WriteHeader(http.StatusOK)
+		if r.Method != http.MethodHead {
+			_, _ = w.Write(payload)
+		}
+	}))
+	defer fileServer.Close()
+
+	server := api.NewServer("127.0.0.1:0")
+	server.SetClient(fileServer.Client())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server.Scheduler().Start(ctx)
+	defer server.Scheduler().Stop()
+	router := server.Router()
+
+	body, _ := json.Marshal(api.CreateDownloadRequest{
+		URL:            fileServer.URL + "/single.bin",
+		DestinationDir: t.TempDir(),
+		MaxChunks:      4,
+		NoOrganize:     true,
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/downloads", bytes.NewReader(body))
+	createW := httptest.NewRecorder()
+	router.ServeHTTP(createW, createReq)
+	if createW.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted, got %d: %s", createW.Code, createW.Body.String())
+	}
+	var created api.DownloadResponse
+	if err := json.Unmarshal(createW.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed decoding create response: %v", err)
+	}
+
+	var detail api.DownloadDetailResponse
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/downloads/"+created.ID, nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code == http.StatusOK {
+			if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+				t.Fatalf("failed decoding detail response: %v", err)
+			}
+			if detail.Status == "completed" {
+				break
+			}
+			if detail.Status == "failed" {
+				t.Fatalf("download failed: %s", detail.Error)
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if detail.Status != "completed" {
+		t.Fatalf("download did not complete in time (status: %s)", detail.Status)
+	}
+
+	if len(detail.Chunks) != 1 {
+		t.Fatalf("expected a single collapsed chunk row, got %d: %+v", len(detail.Chunks), detail.Chunks)
+	}
+	chunk := detail.Chunks[0]
+	if chunk.ChunkIndex != 0 {
+		t.Errorf("expected chunk index 0, got %d", chunk.ChunkIndex)
+	}
+	if chunk.StartByte != 0 {
+		t.Errorf("expected start byte 0, got %d", chunk.StartByte)
+	}
+	if chunk.EndByte != detail.TotalBytes-1 {
+		t.Errorf("expected end byte %d, got %d", detail.TotalBytes-1, chunk.EndByte)
+	}
+	fullRange := chunk.EndByte - chunk.StartByte + 1
+	if chunk.DownloadedBytes != fullRange {
+		t.Errorf("expected downloaded_bytes to reach full range %d, got %d", fullRange, chunk.DownloadedBytes)
+	}
+	if !chunk.Completed {
+		t.Error("expected the single chunk to be completed")
 	}
 }
 

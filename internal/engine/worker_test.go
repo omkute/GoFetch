@@ -234,6 +234,92 @@ func TestCoordinator_DownloadWithOptions_LateRangeDowngrade(t *testing.T) {
 	}
 }
 
+// The optional single-stream fallback hook must fire exactly once when a
+// parallel transfer is downgraded by a late 200, and never on a normal 206 path.
+func TestCoordinator_DownloadWithOptions_SingleStreamFallbackCallback(t *testing.T) {
+	payload := bytes.Repeat([]byte("GoFetch fallback callback payload! "), 64)
+
+	t.Run("late 200 downgrade fires callback once", func(t *testing.T) {
+		var callbackCount atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+			// Ignore Range and answer every request with the full entity at 200.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(payload)
+		}))
+		defer server.Close()
+
+		url := server.URL + "/fallback.bin"
+		probe := &engine.ResourceInfo{
+			URL:           url,
+			FinalURL:      url,
+			Filename:      "fallback.bin",
+			ContentLength: int64(len(payload)),
+			AcceptRanges:  true,
+		}
+		tempDir := t.TempDir()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		coordinator := engine.NewCoordinator(server.Client())
+		_, err := coordinator.DownloadWithOptions(ctx, probe, engine.DownloadOptions{
+			DestDir:    tempDir,
+			MaxWorkers: 4,
+			OnSingleStreamFallback: func() {
+				callbackCount.Add(1)
+			},
+		})
+		if err != nil {
+			t.Fatalf("DownloadWithOptions failed: %v", err)
+		}
+		if got := callbackCount.Load(); got != 1 {
+			t.Fatalf("expected fallback callback exactly once, got %d", got)
+		}
+	})
+
+	t.Run("normal 206 path does not fire callback", func(t *testing.T) {
+		var callbackCount, rangeGETs atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Range") != "" {
+				rangeGETs.Add(1)
+			}
+			// ServeContent honors Range with 206 responses.
+			http.ServeContent(w, r, "range.bin", time.Time{}, bytes.NewReader(payload))
+		}))
+		defer server.Close()
+
+		probe, err := engine.Probe(context.Background(), server.Client(), server.URL+"/range.bin")
+		if err != nil {
+			t.Fatalf("Probe failed: %v", err)
+		}
+		if !probe.AcceptRanges {
+			t.Fatal("expected probe to detect Range support")
+		}
+		tempDir := t.TempDir()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		coordinator := engine.NewCoordinator(server.Client())
+		_, err = coordinator.DownloadWithOptions(ctx, probe, engine.DownloadOptions{
+			DestDir:    tempDir,
+			MaxWorkers: 4,
+			OnSingleStreamFallback: func() {
+				callbackCount.Add(1)
+			},
+		})
+		if err != nil {
+			t.Fatalf("DownloadWithOptions failed: %v", err)
+		}
+		if rangeGETs.Load() == 0 {
+			t.Fatal("expected at least one 206 Range GET on the normal path")
+		}
+		if got := callbackCount.Load(); got != 0 {
+			t.Fatalf("fallback callback must not fire on a 206 path, got %d invocations", got)
+		}
+	})
+}
+
 func TestCoordinator_DownloadParallel_DowngradeWhenRangeUnsupported(t *testing.T) {
 	tempDir := t.TempDir()
 	payload := []byte("Fallback single stream content when Range is not supported")

@@ -25,13 +25,24 @@ import (
 // seedChunkDetails rebuilds the runtime per-chunk view from the authoritative
 // byte-range partition. It runs on every download attempt (including resume)
 // so stale per-chunk values from a previous attempt are never exposed via the
-// detail endpoint. Callers must hold jobsMu.
-func seedChunkDetails(record *jobRecord) {
+// detail endpoint. When singleStream is true, a single row covering the whole
+// file is produced instead of a partition, matching the engine's single-stream
+// transfer. Callers must hold jobsMu.
+func seedChunkDetails(record *jobRecord, singleStream bool) {
 	if record == nil {
 		return
 	}
 	if record.TotalBytes <= 0 {
 		record.Chunks = make([]ChunkDetail, 0)
+		return
+	}
+
+	if singleStream {
+		record.Chunks = []ChunkDetail{{
+			ChunkIndex: 0,
+			StartByte:  0,
+			EndByte:    record.TotalBytes - 1,
+		}}
 		return
 	}
 
@@ -307,7 +318,7 @@ func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
 		record.TargetPath = filepath.Join(targetDir, probe.Filename)
 	}
 	record.TotalBytes = probe.ContentLength
-	seedChunkDetails(record)
+	seedChunkDetails(record, !probe.AcceptRanges || probe.ContentLength <= 0)
 	s.persistJob(record)
 	log.Printf("[Daemon] Started download [%s]: %s (size: %s, chunks: %d)",
 		record.ID[:8], record.FileName, ui.FormatBytes(record.TotalBytes), record.maxChunks)
@@ -345,6 +356,15 @@ func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
 		Checksum:     record.checksum,
 		ChecksumAlgo: record.checksumAlgo,
 		UserAgent:    cfg.UserAgent,
+		// A late 200 from a server that advertised Range support downgrades the
+		// transfer to a single stream. Collapse the chunk view to the single row
+		// the engine will now report progress against, under jobsMu so the
+		// detail handler never observes a torn slice.
+		OnSingleStreamFallback: func() {
+			s.jobsMu.Lock()
+			seedChunkDetails(record, true)
+			s.jobsMu.Unlock()
+		},
 		ProgressFn: func(chunkIndex int, bytesRead int) {
 			s.jobsMu.Lock()
 			record.DownloadedBytes += int64(bytesRead)

@@ -273,6 +273,9 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 		if resumable {
 			_ = c.store.DeleteCheckpoint(opts.JobID)
 		}
+		if opts.OnSingleStreamFallback != nil {
+			opts.OnSingleStreamFallback()
+		}
 		return c.DownloadSingleStreamWithOptions(ctx, probe, opts)
 	}
 

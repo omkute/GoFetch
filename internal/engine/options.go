@@ -25,6 +25,11 @@ type DownloadOptions struct {
 	// UserAgent overrides the User-Agent header for probe and chunk requests.
 	// An empty value falls back to DefaultUserAgent.
 	UserAgent string
+	// OnSingleStreamFallback is an optional hook invoked when an in-flight
+	// parallel transfer is downgraded to a single stream because the origin
+	// ignored a Range request (late 200). It is nil-checked before invocation,
+	// so existing callers that do not set it are unaffected.
+	OnSingleStreamFallback func()
 }
 
 // ProbeOptions configures optional behavior of a resource probe.
