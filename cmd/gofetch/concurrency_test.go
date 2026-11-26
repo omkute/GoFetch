@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"net/http"
 	"testing"
 )
 
@@ -73,16 +72,14 @@ func TestResolveDaemonConcurrency(t *testing.T) {
 func TestChunkSequentialFlagAccepted(t *testing.T) {
 	tempDir := t.TempDir()
 	content := []byte("chunk-sequential flag acceptance payload")
-	origTransport := http.DefaultTransport
-	defer func() { http.DefaultTransport = origTransport }()
-	http.DefaultTransport = createMockTransport(content)
+	origin := newStandaloneTestOrigin(t, content)
 
 	cmd := newRootCmd()
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 	cmd.SetArgs([]string{
-		"http://mock.local/chunkseq.txt",
+		origin.URL + "/chunkseq.txt",
 		"--dir", tempDir,
 		"--no-organize",
 		"-j", "1",

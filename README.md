@@ -176,7 +176,7 @@ gofetch stats
 
 ## ⚙️ Configuration (`~/.gofetch/config.yaml`)
 
-The daemon discovers configuration from `$GOFETCH_CONFIG`, `~/.gofetch/config.yaml`, or `./config.yaml`; use `gofetch daemon --config <path>` to select a file explicitly. Unknown keys are rejected with an error naming the config file.
+Both the daemon and the standalone/root download command discover configuration from `$GOFETCH_CONFIG`, `~/.gofetch/config.yaml`, or `./config.yaml`; use `gofetch --config <path>` (standalone) or `gofetch daemon --config <path>` to select a file explicitly. Unknown keys are rejected with an error naming the config file.
 
 The complete schema is:
 
@@ -207,7 +207,7 @@ Paths in `storage.category_paths` must be relative folder names; absolute paths,
 
 **Optional PostgreSQL telemetry:** set `network.postgres_dsn` (for example `postgres://user:password@127.0.0.1:5432/gofetch`) to persist download events. The daemon creates a `pgxpool` and starts an asynchronous telemetry consumer at startup, then stops it and closes the pool on shutdown. With an empty DSN no pool is created and no database connection is attempted. All database writes happen off the chunk transfer hot path.
 
-**Precedence:** an explicit flag or request field wins over the config file, which wins over the built-in default. For example `gofetch daemon -j 1` overrides `concurrency.max_concurrent_downloads`, while a `POST /api/v1/downloads` body with `max_chunks`, `destination_dir`, `auto_classify`, `no_organize`, or `rate_limit` overrides the corresponding config default. Configuration currently applies to the daemon path; standalone/root `--config` is not wired yet.
+**Precedence:** an explicit flag or request field wins over the config file, which wins over the built-in default. For example `gofetch daemon -j 1` overrides `concurrency.max_concurrent_downloads`, while a `POST /api/v1/downloads` body with `max_chunks`, `destination_dir`, `auto_classify`, `no_organize`, or `rate_limit` overrides the corresponding config default. The same rule applies to standalone downloads: `--dir`, `--chunks`, and `--no-organize` override `storage.default_download_dir`, `concurrency.chunks_per_download`, and the inverse of `storage.auto_classify`. Standalone downloads also honor `storage.category_paths` for post-download routing, `network.user_agent` for probe and chunk requests, and `network.connection_timeout_sec` as a TCP dial timeout (without an overall request deadline).
 
 ---
 

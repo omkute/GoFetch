@@ -39,6 +39,8 @@ type standaloneOptions struct {
 	JSON            bool
 	Out             io.Writer
 	Client          *http.Client
+	CategoryPaths   map[string]string
+	UserAgent       string
 }
 
 func isTerminal(f *os.File) bool {
@@ -70,9 +72,21 @@ func runStandaloneDownload(ctx context.Context, opts standaloneOptions) error {
 		client = &http.Client{Timeout: 0}
 	}
 
+	// Build the router up front so unsafe category paths from configuration
+	// fail before any bytes are transferred. NewRouterWithPaths validates
+	// traversal, absolute paths, and null bytes.
+	var router *classifier.Router
+	if !opts.NoOrganize {
+		var routeErr error
+		router, routeErr = classifier.NewRouterWithPaths(destDir, opts.CategoryPaths)
+		if routeErr != nil {
+			return fmt.Errorf("invalid category paths configuration: %w", routeErr)
+		}
+	}
+
 	// 1. Probe remote resource
 	probeCtx, probeCancel := context.WithTimeout(ctx, 30*time.Second)
-	probe, err := engine.Probe(probeCtx, client, opts.URL)
+	probe, err := engine.ProbeWithOptions(probeCtx, client, opts.URL, engine.ProbeOptions{UserAgent: opts.UserAgent})
 	probeCancel()
 	if err != nil {
 		return fmt.Errorf("probe failed for %s: %w", opts.URL, err)
@@ -103,6 +117,7 @@ func runStandaloneDownload(ctx context.Context, opts standaloneOptions) error {
 		RateLimiter:  limiter,
 		Checksum:     opts.Checksum,
 		ChecksumAlgo: opts.ChecksumAlgo,
+		UserAgent:    opts.UserAgent,
 		ProgressFn: func(chunkIndex int, bytesRead int) {
 			tracker.AddChunkBytes(chunkIndex, int64(bytesRead))
 		},
@@ -233,7 +248,6 @@ func runStandaloneDownload(ctx context.Context, opts standaloneOptions) error {
 	// 3. Media Classification & Organization
 	finalDestination := finalDownloadedPath
 	if !opts.NoOrganize {
-		router := classifier.NewRouter(destDir)
 		if classifiedPath, routeErr := router.Route(finalDownloadedPath); routeErr == nil {
 			finalDestination = classifiedPath
 		}

@@ -4,52 +4,24 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
-	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-func createMockTransport(content []byte) http.RoundTripper {
-	return roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		h := make(http.Header)
-		h.Set("Accept-Ranges", "bytes")
-		h.Set("Content-Length", fmt.Sprintf("%d", len(content)))
-		h.Set("Content-Type", "application/octet-stream")
-
-		if req.Method == http.MethodHead {
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     h,
-				Body:       io.NopCloser(bytes.NewReader(nil)),
-			}, nil
-		}
-
-		rangeHeader := req.Header.Get("Range")
-		if rangeHeader != "" {
-			var start, end int64
-			_, err := fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
-			if err == nil && start >= 0 && end < int64(len(content)) && start <= end {
-				slice := content[start : end+1]
-				h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(content)))
-				h.Set("Content-Length", fmt.Sprintf("%d", len(slice)))
-				return &http.Response{
-					StatusCode: http.StatusPartialContent,
-					Header:     h,
-					Body:       io.NopCloser(bytes.NewReader(slice)),
-				}, nil
-			}
-		}
-
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     h,
-			Body:       io.NopCloser(bytes.NewReader(content)),
-		}, nil
-	})
+// newStandaloneTestOrigin serves content with real HTTP range support so CLI
+// tests can exercise the streaming client without reaching the network.
+func newStandaloneTestOrigin(t *testing.T, content []byte) *httptest.Server {
+	t.Helper()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		http.ServeContent(w, req, filepath.Base(req.URL.Path), time.Time{}, bytes.NewReader(content))
+	}))
+	t.Cleanup(origin.Close)
+	return origin
 }
 
 func TestRootCmdHelp(t *testing.T) {
@@ -82,17 +54,14 @@ func TestDaemonCmdFlag(t *testing.T) {
 func TestRootCmd_StandaloneExecution(t *testing.T) {
 	tempDir := t.TempDir()
 	content := []byte("Hello, GoFetch standalone CLI execution!")
-
-	origTransport := http.DefaultTransport
-	defer func() { http.DefaultTransport = origTransport }()
-	http.DefaultTransport = createMockTransport(content)
+	origin := newStandaloneTestOrigin(t, content)
 
 	cmd := newRootCmd()
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 	cmd.SetArgs([]string{
-		"http://mock.local/sample.txt",
+		origin.URL + "/sample.txt",
 		"--dir", tempDir,
 		"--no-organize",
 		"--quiet",
@@ -119,9 +88,7 @@ func TestRootCmd_StandaloneChecksumVerification(t *testing.T) {
 	hasher.Write(content)
 	expectedHash := hex.EncodeToString(hasher.Sum(nil))
 
-	origTransport := http.DefaultTransport
-	defer func() { http.DefaultTransport = origTransport }()
-	http.DefaultTransport = createMockTransport(content)
+	origin := newStandaloneTestOrigin(t, content)
 
 	// 1. Success matching hash
 	cmd := newRootCmd()
@@ -129,7 +96,7 @@ func TestRootCmd_StandaloneChecksumVerification(t *testing.T) {
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 	cmd.SetArgs([]string{
-		"http://mock.local/verify.txt",
+		origin.URL + "/verify.txt",
 		"--dir", tempDir,
 		"--no-organize",
 		"--quiet",
@@ -147,7 +114,7 @@ func TestRootCmd_StandaloneChecksumVerification(t *testing.T) {
 	cmdBad.SetOut(bufBad)
 	cmdBad.SetErr(bufBad)
 	cmdBad.SetArgs([]string{
-		"http://mock.local/verify.txt",
+		origin.URL + "/verify.txt",
 		"--dir", tempDir,
 		"--no-organize",
 		"--quiet",
@@ -167,17 +134,14 @@ func TestRootCmd_StandaloneChecksumVerification(t *testing.T) {
 func TestRootCmd_StandaloneJSONOutput(t *testing.T) {
 	tempDir := t.TempDir()
 	content := bytes.Repeat([]byte("GoFetch JSON telemetry test line! "), 200)
-
-	origTransport := http.DefaultTransport
-	defer func() { http.DefaultTransport = origTransport }()
-	http.DefaultTransport = createMockTransport(content)
+	origin := newStandaloneTestOrigin(t, content)
 
 	cmd := newRootCmd()
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
 	cmd.SetArgs([]string{
-		"http://mock.local/stream.bin",
+		origin.URL + "/stream.bin",
 		"--dir", tempDir,
 		"--no-organize",
 		"--json",
