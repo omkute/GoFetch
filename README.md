@@ -1,267 +1,267 @@
-# ⚡ GoFetch
+# GoFetch
 
-> **High-performance, resilient, concurrent chunked download manager CLI and loopback daemon engine built in Go.**
+**A concurrent, resumable download manager for Go — CLI/TUI, loopback daemon, and an embedded real-time web dashboard.**
 
-GoFetch is a cross-platform download accelerator designed for extreme network resilience, blazing throughput, and clean local file organization. It seamlessly bridges terminal power users and automated background pipelines through both an interactive CLI/TUI and a persistent local daemon with an embedded real-time Web dashboard.
+GoFetch splits HTTP/HTTPS downloads into non-overlapping byte ranges, writes them straight to disk, and resumes interrupted transfers from persisted checkpoints. It runs as a standalone CLI or as a persistent loopback daemon with a live queue API and dashboard.
 
----
-
-## ✨ Features
-
-- **🚀 Segmented Multi-Connection Acceleration**: Dynamically partitions HTTP/HTTPS downloads into concurrent closed byte ranges (`Range: bytes=start-end`), writing directly to disk via non-overlapping `os.File.WriteAt` calls.
-- **🛡️ Rock-Solid Resumability**: Embedded ACID key-value checkpointing (`bbolt`) ensures interrupted downloads resume seamlessly without re-downloading previously completed bytes.
-- **🔄 Transient Failure Recovery**: Automatic exponential backoff retries on network drops, TCP disconnects, and packet truncations.
-- **📊 Interactive Terminal UI (TUI)**: Beautiful, 10Hz responsive terminal visualization powered by Bubbletea and Lipgloss, displaying overall progress, per-chunk status bars, transfer rates, and remaining ETA.
-- **🤖 Headless & Scriptable Modes**: Quiet (`-q`) and machine-readable JSON (`--json`) modes tailored for CI/CD pipelines, shell scripts, and background tools.
-- **📁 Automated Media Classification**: Automatically inspects MIME magic bytes (`http.DetectContentType`) and file extensions to route finished files into organized subdirectories (`Videos/`, `Documents/`, `Audio/`, `Archives/`, `Software/`, `Others/`).
-- **🎛️ Bandwidth Rate Limiter**: High-precision token-bucket rate limiting configurable globally or per-download (e.g. `--rate-limit 5MB`, `10M`).
-- **🚦 Priority Queue & Dynamic Scheduling**: Global concurrency via `--max-concurrent` / `-j` (default 3). `--sequential` or `-j 1` runs downloads one at a time in strict submission (FIFO) order; `--chunk-sequential` separately fetches a single file's chunks head-to-tail.
-- **🌐 Embedded Modern Desktop / Web GUI**: Zero-dependency single-page application embedded directly into the binary via `embed.FS`, featuring a real-time 60-second Canvas bandwidth graph, live queue controls, category filters, and SSE streaming.
-- **🔒 Checksum Integrity Verification**: Post-download streaming cryptographic verification supporting both SHA-256 and MD5 digests.
-- **🧩 Zero Database on Hot Path**: Memory-mapped sparse file preallocation (`os.Truncate`) and direct disk I/O; telemetry is decoupled onto asynchronous buffered channels.
+- **Go 1.26+** · static, zero-runtime-dependency binary
+- Loopback HTTP on `127.0.0.1:12701` — no external database required
+- Optional PostgreSQL telemetry, fully off the transfer hot path
 
 ---
 
-## 🏗️ Architecture Overview
+## Contents
 
-```
-+-------------------------------------------------------------------------+
-|                              Client Layer                               |
-|                                                                         |
-|   +--------------------------+         +----------------------------+   |
-|   |  CLI Terminal Interface   |         | Browser Extension / Native |   |
-|   |  (Cobra + Bubbletea/TUI) |         | Host Messaging (Post-v1)   |   |
-|   +------------+-------------+         +--------------+-------------+   |
-+----------------|--------------------------------------|-----------------+
-                 |                                      |
-                 | (In-process call or Loopback HTTP/UDS)|
-                 v                                      v
-+-------------------------------------------------------------------------+
-|                       GoFetch Engine (Core Daemon)                      |
-|                                                                         |
-|  +-------------------------------------------------------------------+  |
-|  | Local IPC / REST Server (127.0.0.1:12701 or Unix Domain Socket)   |  |
-|  +---------------------------------+---------------------------------+  |
-|                                    |                                    |
-|                                    v                                    |
-|  +-------------------------------------------------------------------+  |
-|  | Queue & Scheduler (Priority Heap, Concurrency Semaphore)          |  |
-|  +---------------------------------+---------------------------------+  |
-|                                    |                                    |
-|                                    v                                    |
-|  +-------------------------------------------------------------------+  |
-|  | Download Engine & Worker Pool (HTTP Range, Dynamic Chunking)      |  |
-|  +---------------------------------+---------------------------------+  |
-|                                    |                                    |
-|                                    v                                    |
-|  +-------------------------------------------------------------------+  |
-|  | Storage & Disk IO (Sparse File Preallocation, Concurrent WriteAt) |  |
-|  +---------------------------------+---------------------------------+  |
-|                                    |                                    |
-|                                    v                                    |
-|  +-------------------------------------------------------------------+  |
-|  | Media Classifier (MIME Sniffer & Extension Rule Engine)           |  |
-|  +-------------------------------------------------------------------+  |
-+-------------------------------------------------------------------------+
-       |                                                    |
-(Async Event Channel)                              (Direct File I/O)
-       v                                                    v
-+-----------------------------+               +---------------------------+
-| State Store & Telemetry     |               | Target Filesystem         |
-| - Fast In-Memory State      |               | - Temp: `*.part` (Sparse) |
-| - Local Checkpoint (bbolt)  |               | - Final: `Downloads/`     |
-| - Off-Hot-Path Postgres Sync|               |   - `Videos/`, `Docs/`,.. |
-+-----------------------------+               +---------------------------+
-```
+- [Features](#features)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Architecture](#architecture)
+- [Configuration](#configuration)
+- [REST API and event stream](#rest-api-and-event-stream)
+- [Screenshots](#screenshots)
+- [Development](#development)
+- [Project layout](#project-layout)
+- [Invariants](#invariants)
+- [License](#license)
 
 ---
 
-## 📦 Installation & Build
+## Features
 
-### Prerequisites
-- **Go 1.26+**
-- **Make** (optional, standard POSIX)
+- **Segmented transfers** — partition a file into concurrent ranges and write with disjoint `WriteAt` calls.
+- **Resume with revalidation** — bbolt checkpoints persist chunk offsets; `If-Range`/ETAG checks prevent resuming against a changed resource. Single-stream downloads are resumable too.
+- **Failure recovery** — exponential-backoff retries for transient statuses (429/500/502/503/504) and network errors; servers that ignore Range requests are downgraded to a single stream.
+- **Integrity first** — SHA-256/MD5 verification runs against the staged file *before* the atomic rename to its final name.
+- **Per-job staging** — each job gets its own `.gofetch.part` path, so concurrent downloads of the same filename cannot collide.
+- **Interactive TUI** — Bubbletea/Lipgloss progress view with per-chunk status, speed, and ETA; `--headless` and `--json` for scripts.
+- **Loopback daemon + queue** — priority scheduling, `-j`/`--max-concurrent`, `--sequential` (FIFO) mode, pause/resume/cancel, and batch ingestion.
+- **Embedded web dashboard** — `embed.FS` SPA with a 60-second bandwidth chart, category filters, live detail drawer with per-chunk view, and sub-100 ms SSE updates.
+- **Automatic organization** — MIME/extension classification into `Videos/`, `Documents/`, `Audio/`, `Archives/`, `Software/`, and `Others/`, with configurable folder names.
+- **Bandwidth control** — token-bucket limiter, per-task or global, adjustable at runtime.
+- **Strict configuration** — YAML with unknown-key rejection, explicit flag > config > default precedence.
 
-### Compiling from Source
+---
+
+## Install
+
+Prerequisites: **Go 1.26+**, `make` (optional), `golangci-lint` (for linting).
 
 ```bash
-# Clone the repository
 git clone https://github.com/omkute/gofetch.git
 cd gofetch
-
-# Compile the static optimized binary
-make build
-
-# The binary will be available at bin/gofetch
+make build                 # CGO_ENABLED=0 -> bin/gofetch
 ./bin/gofetch --help
 ```
 
+Other targets: `make run`, `make test`, `make bench`, `make lint`, `make clean`.
+
 ---
 
-## 🚀 Quick Start Guide
+## Quick start
 
-### 1. Standalone CLI Download (Direct In-Process)
-
-Download any URL directly in your terminal with the interactive Bubbletea TUI:
+### Standalone (in-process CLI/TUI)
 
 ```bash
-# Basic segmented download (4 concurrent chunks by default)
-gofetch https://releases.ubuntu.com/24.04/ubuntu-24.04-desktop-amd64.iso
+# Segmented download with the interactive TUI (4 chunks by default)
+gofetch https://example.com/large.iso
 
-# Custom chunks, destination directory, and bandwidth limit
-gofetch -c 8 -d ~/Downloads -l 10MB https://example.com/large-archive.tar.gz
+# 8 chunks, custom destination, 10 MB/s cap
+gofetch -c 8 -d ~/Downloads -l 10MB https://example.com/archive.tar.gz
 
-# Checksum verification with automatic directory classification
-gofetch --checksum 5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8 \
-        --checksum-algo sha256 \
-        https://example.com/dataset.zip
+# Verify integrity before commit and organize the result
+gofetch --checksum <sha256-hex> --checksum-algo sha256 https://example.com/dataset.zip
 
-# Batch download from a text file (one URL per line)
+# Batch from a file (one URL per line), scripting modes
 gofetch -f urls.txt -d ~/Downloads
-
-# Headless / Scripting mode (plain text or machine-readable JSON)
 gofetch --headless https://example.com/file.bin
 gofetch --json https://example.com/file.bin > progress.jsonl
 ```
 
-### 2. Interactive Web GUI Dashboard
+Useful flags: `--config`, `-j/--max-concurrent`, `--sequential`, `--chunk-sequential`, `--no-organize`, `--quiet`, `--input-file`.
 
-Launch the zero-dependency embedded desktop web dashboard:
-
-```bash
-gofetch gui
-# Or use the alias:
-gofetch web
-```
-
-GoFetch automatically opens your default browser at `http://127.0.0.1:12701/`. If the background daemon is not already running, it starts it in-process.
-
-### 3. Loopback Daemon & Queue Management
-
-Run the GoFetch daemon as a background service:
+### Daemon and queue
 
 ```bash
-# Start daemon on default loopback port 127.0.0.1:12701
-gofetch daemon
-
-# Or apply a global bandwidth ceiling across all tasks
+gofetch daemon                     # starts on 127.0.0.1:12701
+gofetch daemon -j 1                # strict FIFO, one download at a time
 gofetch daemon --rate-limit 20MB
-```
 
-Manage tasks concurrently from any other terminal tab:
-
-```bash
-# Enqueue a high-priority download
-gofetch add https://example.com/movie.mp4 --priority high -c 8 -l 5MB
-
-# Batch enqueue from a URL file
-gofetch add -f urls.txt --priority normal
-
-# List active, queued, and completed downloads
-gofetch list
-gofetch list --status downloading
-
-# Pause and resume by Task ID
-gofetch pause abc12345
-gofetch resume abc12345
-
-# Cancel and purge files
-gofetch cancel abc12345 --purge
-
-# Inspect daemon runtime metrics and aggregate throughput
+gofetch add https://example.com/video.mp4 --priority high -c 8 -l 5MB
+gofetch add -f urls.txt
+gofetch list                       # add --status downloading|queued|paused|completed|failed
+gofetch pause <id>
+gofetch resume <id>
+gofetch cancel <id> --purge
 gofetch stats
 ```
 
+### Web dashboard
+
+```bash
+gofetch gui                        # aliases: web, dashboard
+```
+
+Opens `http://127.0.0.1:12701/` in your default browser. The dashboard shows live progress, a 60-second speed chart, category filters, and a per-chunk detail drawer. The daemon serves the API even when the GUI is disabled via config.
+
 ---
 
-## ⚙️ Configuration (`~/.gofetch/config.yaml`)
+## Architecture
 
-Both the daemon and the standalone/root download command discover configuration from `$GOFETCH_CONFIG`, `~/.gofetch/config.yaml`, or `./config.yaml`; use `gofetch --config <path>` (standalone) or `gofetch daemon --config <path>` to select a file explicitly. Unknown keys are rejected with an error naming the config file.
+```
+CLI / TUI (Cobra, Bubbletea)
+        |
+        +--> Standalone engine (in-process)
+        |
+        +--> Loopback REST daemon (chi, 127.0.0.1:12701)
+                 |
+                 v
+        Priority queue + concurrency scheduler
+                 |
+                 v
+        Download coordinator
+          - probe (HEAD/GET, Range, ETag)
+          - chunk workers / retries / single-stream fallback
+          - per-job .gofetch.part staging + checksum verification
+                 |
+        +--------+-------------------------+
+        |                                  |
+        v                                  v
+  bbolt checkpoints                  Target filesystem
+  async event bus / telemetry        WriteAt -> os.Rename -> classifier
+  (optional Postgres consumer)
+```
 
-The complete schema is:
+### Transfer lifecycle
+
+1. **Probe** the URL for size, range support, ETag, and a sanitized filename.
+2. **Partition** into bounded ranges; persist a checkpoint keyed by job ID.
+3. **Stream** each range into the job's own sparse staging file; publish offsets through a non-blocking handoff.
+4. **Recover** from transient statuses with backoff; fall back to one stream if the origin ignores Range.
+5. **Verify** the staged bytes against the requested checksum.
+6. **Commit** with `os.Rename`, then classify into a category folder.
+
+No database query runs inside a chunk worker; checkpoint and telemetry writes are consumed asynchronously.
+
+---
+
+## Configuration
+
+Config is discovered from `$GOFETCH_CONFIG`, `~/.gofetch/config.yaml`, or `./config.yaml`. Select a file explicitly with `gofetch --config <path>` (standalone) or `gofetch daemon --config <path>`. Unknown keys are rejected with an error naming the file.
 
 ```yaml
 concurrency:
-  max_concurrent_downloads: 3 # global download limit
-  chunks_per_download: 4      # default chunk count when a request omits max_chunks
+  max_concurrent_downloads: 3   # daemon-wide download limit
+  chunks_per_download: 4        # default when a request omits max_chunks
 storage:
-  default_download_dir: "/absolute/path/to/Downloads" # default destination when a request omits destination_dir
-  auto_classify: true                 # default classification when a request omits auto_classify
-  category_paths:                     # category -> folder name (relative to the download directory)
+  default_download_dir: "/absolute/path/to/Downloads"
+  auto_classify: true
+  category_paths:               # category -> folder, relative to download dir
     Videos: "Videos"
     Documents: "Documents"
 network:
   user_agent: "GoFetch/2.0"
-  connection_timeout_sec: 30
-  global_rate_limit_bps: 20971520 # 20 MB/s
-  postgres_dsn: ""                # optional PostgreSQL telemetry DSN; empty disables it
+  connection_timeout_sec: 30    # TCP dial timeout, not an overall deadline
+  global_rate_limit_bps: 20971520
+  postgres_dsn: ""              # empty disables optional telemetry
 daemon:
   listen_addr: "127.0.0.1:12701"
   enable_web_gui: true
   task_db_path: "/absolute/path/to/.gofetch/daemon_tasks.db"
 ```
 
-Use absolute paths in the YAML file; the loader does not expand `~`. When no config file is found, defaults for the download directory and task DB are derived from the current user's home directory.
-
-Paths in `storage.category_paths` must be relative folder names; absolute paths, `..` segments, and null bytes are rejected. Per-category folder names may be nested (for example `Media/Videos`), and categories not listed use their built-in folder names.
-
-**Optional PostgreSQL telemetry:** set `network.postgres_dsn` (for example `postgres://user:password@127.0.0.1:5432/gofetch`) to persist download events. The daemon creates a `pgxpool` and starts an asynchronous telemetry consumer at startup, then stops it and closes the pool on shutdown. With an empty DSN no pool is created and no database connection is attempted. All database writes happen off the chunk transfer hot path.
-
-**Precedence:** an explicit flag or request field wins over the config file, which wins over the built-in default. For example `gofetch daemon -j 1` overrides `concurrency.max_concurrent_downloads`, while a `POST /api/v1/downloads` body with `max_chunks`, `destination_dir`, `auto_classify`, `no_organize`, or `rate_limit` overrides the corresponding config default. The same rule applies to standalone downloads: `--dir`, `--chunks`, and `--no-organize` override `storage.default_download_dir`, `concurrency.chunks_per_download`, and the inverse of `storage.auto_classify`. Standalone downloads also honor `storage.category_paths` for post-download routing, `network.user_agent` for probe and chunk requests, and `network.connection_timeout_sec` as a TCP dial timeout (without an overall request deadline).
+- Use absolute paths in YAML; `~` is not expanded.
+- `category_paths` values must be relative: absolute paths, `..` segments, and null bytes are rejected.
+- Precedence: **explicit flag/request field > config file > built-in default**. Standalone honors `--dir`, `--chunks`, and `--no-organize` as overrides; the daemon honors `-j/--max-concurrent`, `--sequential`, `--addr`, and `--rate-limit`.
+- With no config file, home-derived defaults apply. On standalone this means `~/Downloads` and the config user agent.
+- Optional telemetry: set `network.postgres_dsn` to persist download events. The daemon creates a pool at startup and closes it on shutdown; all inserts run in a background consumer.
 
 ---
 
-## 📡 REST API & Real-Time Event Stream
+## REST API and event stream
 
-When running in daemon mode (`127.0.0.1:12701`), GoFetch exposes local REST and SSE endpoints:
-
-| Method | Endpoint | Description |
+| Method | Endpoint | Purpose |
 | :--- | :--- | :--- |
-| `GET` | `/` | Serves the embedded Web GUI dashboard |
-| `GET` | `/api/v1/health` | Daemon health check |
-| `POST` | `/api/v1/downloads` | Enqueue a new download |
-| `POST` | `/api/v1/downloads/batch`| Enqueue a batch of URLs |
-| `GET` | `/api/v1/downloads` | List downloads (filter by `status`) |
-| `GET` | `/api/v1/downloads/{id}` | Granular task metrics and chunk boundaries |
-| `POST` | `/api/v1/downloads/{id}/pause` | Pause an active download |
-| `POST` | `/api/v1/downloads/{id}/resume`| Resume a paused download |
-| `DELETE`| `/api/v1/downloads/{id}` | Cancel/delete task (`delete_files=true`) |
-| `POST` | `/api/v1/downloads/pause-all` | Simultaneously pause all tasks |
-| `POST` | `/api/v1/downloads/resume-all` | Simultaneously resume all tasks |
-| `GET` | `/api/v1/system/stats` | System metrics (throughput, memory, uptime) |
-| `POST` | `/api/v1/system/rate-limit` | Dynamically update global speed limit |
-| `GET` | `/api/v1/events` | Server-Sent Events (SSE) sub-100ms stream |
+| `GET` | `/` | Embedded dashboard (when `enable_web_gui` is true) |
+| `GET` | `/api/v1/health` | Health check |
+| `POST` | `/api/v1/downloads` | Enqueue one download |
+| `POST` | `/api/v1/downloads/batch` | Enqueue multiple URLs |
+| `GET` | `/api/v1/downloads` | List tasks (`?status=downloading`) |
+| `GET` | `/api/v1/downloads/{id}` | Task detail including per-chunk boundaries |
+| `POST` | `/api/v1/downloads/{id}/pause` | Pause |
+| `POST` | `/api/v1/downloads/{id}/resume` | Resume |
+| `DELETE` | `/api/v1/downloads/{id}` | Cancel (`?delete_files=true` to purge) |
+| `POST` | `/api/v1/downloads/pause-all` | Pause all |
+| `POST` | `/api/v1/downloads/resume-all` | Resume all |
+| `GET` | `/api/v1/system/stats` | Aggregate metrics |
+| `POST` | `/api/v1/system/rate-limit` | Update global limit at runtime |
+| `GET` | `/api/v1/events` | SSE lifecycle events and sub-100 ms progress frames |
+
+Queue order is deterministic: tasks are emitted in submission order (oldest first, ID tie-break), so dashboard rows stay put between frames.
 
 ---
 
-## 🧪 Testing & Code Quality
+## Screenshots
 
-The GoFetch test suite verifies strict adherence to architectural invariants, concurrency safety, and zero race conditions:
+Images are kept in `docs/screenshots/`. See [docs/screenshots/README.md](docs/screenshots/README.md) for capture instructions and the expected file names.
 
-```bash
-# Run unit and race condition tests
-make test
-# (Equivalent to: go test -v -race ./...)
+| Capture | File | Status |
+| :--- | :--- | :--- |
+| Web dashboard with active queue | `docs/screenshots/dashboard.png` | add image |
+| Task detail / chunk view | `docs/screenshots/chunk-details.png` | add image |
+| Interactive TUI during a download | `docs/screenshots/tui.png` | add image |
 
-# Run storage & transfer benchmarks
-make bench
+Once images are added, embed them here, for example:
 
-# Run strict linter checks
-make lint
+```markdown
+![GoFetch dashboard](docs/screenshots/dashboard.png)
 ```
 
 ---
 
-## 📜 Invariants & Architectural Rules
+## Development
 
-1. **Decoupled Databases**: No relational database transactions ever run on the byte transfer hot path. Storage writes exclusively to disk via `WriteAt`; metrics stream over non-blocking Go channels.
-2. **Safe Atomic Commits**: In-progress transfers write exclusively to `.gofetch.part` staging files and commit atomically via `os.Rename` only upon completion and checksum verification.
-3. **Chunk Boundary Isolation**: Workers operate strictly on disjoint, deterministic byte intervals `[start, end]`.
-4. **Dynamic Range Fallback**: If an endpoint lacks `Range` header support or returns HTTP `200` instead of `206`, the engine automatically downgrades to a single continuous stream without data corruption.
-5. **Path Traversal Protection**: All URLs and `Content-Disposition` filenames are sanitized against directory traversal attacks (`../`, null bytes, slashes).
+```bash
+make test          # go test -v -race ./...
+make lint          # golangci-lint run ./...  (expect 0 issues)
+make bench         # storage and transfer benchmarks
+go build ./...     # compile all packages
+```
+
+Integration tests start a real loopback daemon on an ephemeral port and exercise enqueue, progress, pause, resume, cancel, checksum failure, and batch ingestion over HTTP.
+
+Specs and design notes live in `docs/PRODUCT.md`, `docs/SPECS/`, `docs/DECISIONS/`, and `tasks/BACKLOG.md`. `AGENTS.md` records the invariants and definition of done.
 
 ---
 
-## 📄 License
+## Project layout
 
-MIT License. See [LICENSE](LICENSE) for details.
+| Path | Contents |
+| :--- | :--- |
+| `cmd/gofetch` | Cobra commands, standalone engine, GUI launcher |
+| `config` | YAML schema, loader, strict validation |
+| `internal/api` | Daemon router, handlers, SSE, config wiring, telemetry |
+| `internal/engine` | Probe, partition, chunk workers, retries, checkpoints |
+| `internal/storage` | Sparse staging writer, checksum, atomic commit |
+| `internal/queue` | Priority queue and concurrency scheduler |
+| `internal/classifier` | MIME/extension rules and directory routing |
+| `internal/state` | bbolt stores, event bus, telemetry consumer |
+| `internal/ui`, `internal/web` | TUI and embedded dashboard assets |
+| `tests/integration` | Real-listener end-to-end tests |
+| `bench` | Benchmarks |
+
+---
+
+## Invariants
+
+1. No database work on the chunk transfer hot path; telemetry and checkpoints use async buffered handoffs.
+2. Downloads write to a per-job `.gofetch.part` and commit via `os.Rename` only after full completion and checksum verification.
+3. Chunks write only to deterministic, non-overlapping byte ranges.
+4. Range support is verified (`Accept-Ranges`, status `206`); a `200` response falls back safely to a single stream.
+5. URLs and `Content-Disposition` filenames are sanitized against traversal (`../`, absolute paths, null bytes); configured category paths are validated the same way.
+6. Never commit secrets or credentials.
+
+---
+
+## License
+
+MIT License.
