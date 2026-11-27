@@ -17,7 +17,6 @@ import (
 
 	"github.com/omkute/gofetch/internal/engine"
 	"github.com/omkute/gofetch/internal/state"
-	"github.com/omkute/gofetch/internal/storage"
 )
 
 // TestIntegration_ResumePreservesProgressAndRevalidates exercises the real
@@ -166,7 +165,7 @@ func TestIntegration_ResumePreservesProgressAndRevalidates(t *testing.T) {
 		t.Fatal("expected at least one incomplete chunk to resume")
 	}
 
-	partPath := filepath.Join(tempDir, probe.Filename) + storage.PartFileExtension
+	partPath := engine.StagingPathFor(filepath.Join(tempDir, probe.Filename), jobID)
 	if info, statErr := os.Stat(partPath); statErr != nil || info.Size() != totalSize {
 		t.Fatalf("expected preserved full-size part file, stat: %v, size: %v", statErr, info)
 	}

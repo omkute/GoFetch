@@ -601,7 +601,7 @@ func (s *Server) handleDeleteDownload(w http.ResponseWriter, r *http.Request) {
 		}
 		if deleteFiles {
 			_ = os.Remove(job.TargetPath)
-			_ = os.Remove(job.TargetPath + ".gofetch.part")
+			_ = os.Remove(engine.StagingPathFor(job.TargetPath, id))
 		}
 		delete(s.jobs, id)
 		s.mu.RLock()

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/omkute/gofetch/internal/api"
-	"github.com/omkute/gofetch/internal/storage"
+	"github.com/omkute/gofetch/internal/engine"
 )
 
 type roundTripFunc func(req *http.Request) (*http.Response, error)
@@ -115,7 +115,7 @@ func TestIntegration_DaemonRESTAPILifecycle(t *testing.T) {
 	if !bytes.Equal(stored, payload) {
 		t.Fatalf("committed file has %d bytes, want the exact %d-byte payload", len(stored), len(payload))
 	}
-	if _, statErr := os.Stat(finalPath + storage.PartFileExtension); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(engine.StagingPathFor(finalPath, taskID)); !os.IsNotExist(statErr) {
 		t.Errorf("staging file should be removed after commit: %v", statErr)
 	}
 
@@ -171,7 +171,7 @@ func TestIntegration_DaemonChecksumVerification(t *testing.T) {
 	if _, statErr := os.Stat(finalPath); !os.IsNotExist(statErr) {
 		t.Fatalf("checksum mismatch must never create final file %q, stat error: %v", finalPath, statErr)
 	}
-	partPath := finalPath + storage.PartFileExtension
+	partPath := engine.StagingPathFor(finalPath, created.ID)
 	if _, statErr := os.Stat(partPath); statErr != nil {
 		t.Fatalf("checksum mismatch must preserve staged part file %q: %v", partPath, statErr)
 	}

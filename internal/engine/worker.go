@@ -105,7 +105,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 	}
 
 	finalPath := filepath.Join(absDir, probe.Filename)
-	partPath := finalPath + storage.PartFileExtension
+	partPath := StagingPathFor(finalPath, opts.JobID)
 	downloadURL := probe.FinalURL
 	if downloadURL == "" {
 		downloadURL = probe.URL
@@ -169,7 +169,7 @@ func (c *Coordinator) DownloadWithOptions(ctx context.Context, probe *ResourceIn
 	}
 
 	// 3. Preallocate target disk space upfront
-	writer, err := storage.NewFileWriter(finalPath, probe.ContentLength)
+	writer, err := storage.NewFileWriterWithPartPath(finalPath, partPath, probe.ContentLength)
 	if err != nil {
 		return "", fmt.Errorf("failed to preallocate staging file: %w", err)
 	}

@@ -31,17 +31,34 @@ func NewFileWriter(finalPath string, totalSize int64) (*FileWriter, error) {
 	}
 
 	cleanFinal := filepath.Clean(finalPath)
+	return NewFileWriterWithPartPath(cleanFinal, cleanFinal+PartFileExtension, totalSize)
+}
+
+// NewFileWriterWithPartPath behaves like NewFileWriter but stages bytes in the
+// caller-supplied partPath instead of the default finalPath + PartFileExtension.
+// This lets concurrent jobs targeting the same final name use separate staging
+// files while preserving the same lifecycle (preallocation, PartPath, Sync,
+// Commit via os.Rename, Close, and Discard). The part file is still opened with
+// O_RDWR|O_CREATE so interrupted downloads can be resumed.
+func NewFileWriterWithPartPath(finalPath, partPath string, totalSize int64) (*FileWriter, error) {
+	if finalPath == "" {
+		return nil, errors.New("final path cannot be empty")
+	}
+	if partPath == "" {
+		return nil, errors.New("part path cannot be empty")
+	}
+
+	cleanFinal := filepath.Clean(finalPath)
+	cleanPart := filepath.Clean(partPath)
 	dir := filepath.Dir(cleanFinal)
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return nil, fmt.Errorf("failed to create target directory %q: %w", dir, err)
 	}
 
-	partPath := cleanFinal + PartFileExtension
-
 	// Open with O_RDWR|O_CREATE, mode 0600 (restricted to user)
-	file, err := os.OpenFile(partPath, os.O_RDWR|os.O_CREATE, 0600)
+	file, err := os.OpenFile(cleanPart, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create or open part file %q: %w", partPath, err)
+		return nil, fmt.Errorf("failed to create or open part file %q: %w", cleanPart, err)
 	}
 
 	if totalSize >= 0 {
@@ -53,7 +70,7 @@ func NewFileWriter(finalPath string, totalSize int64) (*FileWriter, error) {
 
 	return &FileWriter{
 		finalPath: cleanFinal,
-		partPath:  partPath,
+		partPath:  cleanPart,
 		file:      file,
 		totalSize: totalSize,
 	}, nil

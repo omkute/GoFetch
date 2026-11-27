@@ -83,7 +83,8 @@ func TestResume_MidDownloadInterruption(t *testing.T) {
 	}()
 
 	finalPath := filepath.Join(tempDir, "resumable_test.bin")
-	partPath := finalPath + storage.PartFileExtension
+	jobID := "job-resumable-1"
+	partPath := engine.StagingPathFor(finalPath, jobID)
 
 	// Pre-create the part file as if chunk 0 and chunk 1 were already written, and chunk 2 partially written
 	// Chunks for 1MB with 4 workers:
@@ -91,7 +92,7 @@ func TestResume_MidDownloadInterruption(t *testing.T) {
 	// Chunk 1: [262144, 524287] (262144 bytes) - Completed
 	// Chunk 2: [524288, 786431] (262144 bytes) - Partially downloaded (up to 600000)
 	// Chunk 3: [786432, 1048575] (262144 bytes) - Not started
-	fw, err := storage.NewFileWriter(finalPath, totalSize)
+	fw, err := storage.NewFileWriterWithPartPath(finalPath, partPath, totalSize)
 	if err != nil {
 		t.Fatalf("failed to create existing part file: %v", err)
 	}
@@ -103,7 +104,6 @@ func TestResume_MidDownloadInterruption(t *testing.T) {
 	_ = fw.Close() // leave .part on disk
 
 	// Save existing checkpoint into bbolt store
-	jobID := "job-resumable-1"
 	existingCheckpoint := &state.Checkpoint{
 		ID:        jobID,
 		URL:       "http://mock.local/resumable_test.bin",

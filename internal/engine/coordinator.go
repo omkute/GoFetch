@@ -59,7 +59,7 @@ func (c *Coordinator) DownloadSingleStreamWithOptions(ctx context.Context, probe
 	}
 
 	finalPath := filepath.Join(absDir, probe.Filename)
-	partPath := finalPath + storage.PartFileExtension
+	partPath := StagingPathFor(finalPath, opts.JobID)
 	downloadURL := probe.FinalURL
 	if downloadURL == "" {
 		downloadURL = probe.URL
@@ -96,7 +96,7 @@ func (c *Coordinator) DownloadSingleStreamWithOptions(ctx context.Context, probe
 	}
 
 	// Preallocate if content length is known (>= 0), otherwise create dynamic staging file
-	writer, err := storage.NewFileWriter(finalPath, probe.ContentLength)
+	writer, err := storage.NewFileWriterWithPartPath(finalPath, partPath, probe.ContentLength)
 	if err != nil {
 		return "", fmt.Errorf("failed to initialize staging file: %w", err)
 	}
