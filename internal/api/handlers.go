@@ -475,36 +475,7 @@ func (s *Server) runDownload(ctx context.Context, record *jobRecord) error {
 
 func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 	statusFilter := r.URL.Query().Get("status")
-
-	s.jobsMu.RLock()
-	defer s.jobsMu.RUnlock()
-
-	items := make([]DownloadItem, 0, len(s.jobs))
-	for _, job := range s.jobs {
-		if statusFilter != "" && !strings.EqualFold(job.Status, statusFilter) {
-			continue
-		}
-
-		pct := 0.0
-		if job.TotalBytes > 0 {
-			pct = (float64(job.DownloadedBytes) / float64(job.TotalBytes)) * 100.0
-		}
-
-		items = append(items, DownloadItem{
-			ID:              job.ID,
-			URL:             job.URL,
-			FileName:        job.FileName,
-			Status:          job.Status,
-			Priority:        job.Priority,
-			TotalBytes:      job.TotalBytes,
-			DownloadedBytes: job.DownloadedBytes,
-			ProgressPercent: pct,
-			SpeedBps:        job.SpeedBps,
-			ETASeconds:      job.ETASeconds,
-			Category:        job.Category,
-			Error:           job.Error,
-		})
-	}
+	items, _, _ := s.sortedDownloadItems(statusFilter)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
